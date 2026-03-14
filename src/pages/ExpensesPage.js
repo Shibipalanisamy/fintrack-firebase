@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { expenseService, categoryService } from '../utils/dbService';
+import { expenseService, categoryService, recurringService } from '../utils/dbService';
 import { fmt, fmtDate, fmtDateInput, today, exportCSV, importCSV } from '../utils/helpers';
 import { Modal, ConfirmDelete, MonthYearFilter } from '../components/UI';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Legend, CartesianGrid } from 'recharts';
 import { PALETTE } from '../utils/helpers';
 import toast from 'react-hot-toast';
 
@@ -29,7 +29,7 @@ function NoteCell({ note }) {
 const EXPENSE_GROUPS = [
   {
     key: 'house', label: 'House Expenses', icon: '🏠', color: '#f97316',
-    categories: ['Gas Booking or Advance','Snacks','Grocery','Water Can and Advance','Internet / Modem','Meat or Egg','Dry Fruits','Flour','Vegetables for Office','Vegetables','Milk','Oil','Fruits','Rice','Electricity Bill','Curd','Paneer','Basic Needs','House Rent / Advance']
+    categories: ['Gas Booking or Advance','Snacks','Grocery','Water Can and Advance','Internet / Modem','Meat or Egg','Dry Fruits','Flour','Vegetables for Office','Vegetables','Vegetable','Milk','Oil','Fruits','Rice','Electricity Bill','Curd','Paneer','Basic Needs','House Rent / Advance']
   },
   {
     key: 'investment', label: 'Investments', icon: '📈', color: '#22c55e',
@@ -503,6 +503,567 @@ function DailySpendingTab({ items }) {
   );
 }
 
+// ─── Recurring Expenses Tab ────────────────────────────────
+const FREQ_OPTIONS = [
+  { key: 'daily',     label: 'Daily',      days: 1 },
+  { key: 'weekly',    label: 'Weekly',     days: 7 },
+  { key: 'monthly',   label: 'Monthly',    days: 30 },
+  { key: 'quarterly', label: 'Quarterly',  days: 90 },
+  { key: 'yearly',    label: 'Yearly',     days: 365 },
+];
+
+const BLANK_REC = { name: '', category: '', amount: '', frequency: 'monthly', nextDue: today(), paidVia: '', notes: '', isActive: true };
+
+function RecurringTab({ cats }) {
+  const [items, setItems]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal]   = useState(false);
+  const [edit, setEdit]     = useState(null);
+  const [delId, setDelId]   = useState(null);
+  const [form, setForm]     = useState(BLANK_REC);
+  const [adding, setAdding] = useState(false);
+
+  const now = new Date();
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    setLoading(true);
+    try { setItems(await recurringService.getAll()); }
+    catch { toast.error('Failed to load'); }
+    finally { setLoading(false); }
+  };
+
+  const save = async () => {
+    if (!form.name || !form.amount || !form.nextDue) { toast.error('Fill Name, Amount and Next Due date'); return; }
+    setAdding(true);
+    try {
+      if (edit) { await recurringService.update(edit.id, form); toast.success('Updated!'); }
+      else { await recurringService.create(form); toast.success('Recurring expense added!'); }
+      setModal(false); setEdit(null); setForm(BLANK_REC); load();
+    } catch { toast.error('Failed'); }
+    finally { setAdding(false); }
+  };
+
+  const del = async () => {
+    try { await recurringService.delete(delId); toast.success('Deleted'); setDelId(null); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  const toggleActive = async (item) => {
+    try { await recurringService.update(item.id, { ...item, isActive: !item.isActive }); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  // Record a payment — creates an expense entry and advances next due date
+  const recordPayment = async (item) => {
+    try {
+      const freq = FREQ_OPTIONS.find(f => f.key === item.frequency);
+      const nextDue = new Date(item.nextDue);
+      nextDue.setDate(nextDue.getDate() + (freq?.days || 30));
+      // Create expense
+      await expenseService.create({
+        category: item.category || 'Recurring',
+        amount: parseFloat(item.amount),
+        date: today(),
+        paidVia: item.paidVia || '',
+        notes: `[Recurring] ${item.name}`,
+      });
+      // Advance next due
+      await recurringService.update(item.id, { ...item, nextDue: nextDue.toISOString().split('T')[0], lastPaid: today() });
+      toast.success(`Payment recorded! Next due: ${nextDue.toLocaleDateString('en-IN')}`);
+      load();
+    } catch { toast.error('Failed'); }
+  };
+
+  const getDaysUntil = (dateStr) => {
+    const due = new Date(dateStr);
+    const diff = Math.round((due - now) / (1000 * 60 * 60 * 24));
+    return diff;
+  };
+
+  const getDueStatus = (days) => {
+    if (days < 0)  return { label: `${Math.abs(days)}d overdue`, color: '#f43f5e', bg: 'rgba(244,63,94,.1)' };
+    if (days === 0) return { label: 'Due today!',  color: '#f43f5e', bg: 'rgba(244,63,94,.1)' };
+    if (days <= 3)  return { label: `${days}d left`, color: '#fb923c', bg: 'rgba(251,146,60,.1)' };
+    if (days <= 7)  return { label: `${days}d left`, color: '#fbbf24', bg: 'rgba(251,191,36,.1)' };
+    return { label: `${days}d left`, color: 'var(--t3)', bg: 'var(--bg3)' };
+  };
+
+  const activeItems  = items.filter(i => i.isActive);
+  const inactiveItems = items.filter(i => !i.isActive);
+  const monthlyTotal = activeItems.reduce((s, i) => {
+    const freq = FREQ_OPTIONS.find(f => f.key === i.frequency);
+    const perMonth = freq ? (parseFloat(i.amount) * 30) / freq.days : parseFloat(i.amount);
+    return s + perMonth;
+  }, 0);
+  const overdueCount = activeItems.filter(i => getDaysUntil(i.nextDue) < 0).length;
+  const dueSoonCount = activeItems.filter(i => { const d = getDaysUntil(i.nextDue); return d >= 0 && d <= 7; }).length;
+
+  const ch = e => setForm(p => ({ ...p, [e.target.name]: e.target.value }));
+  const favCats = cats.filter(c => c.isFavorite);
+  const otherCats = cats.filter(c => !c.isFavorite);
+
+  return (
+    <div>
+      {/* Summary */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 10, marginBottom: 16 }}>
+        {[
+          { label: 'Est. Monthly Cost', val: fmt(monthlyTotal), c: 'var(--blue)', icon: '📅' },
+          { label: 'Active Recurring', val: activeItems.length, c: 'var(--green)', icon: '🔄' },
+          { label: 'Overdue', val: overdueCount, c: overdueCount > 0 ? 'var(--red)' : 'var(--t3)', icon: '🚨' },
+          { label: 'Due This Week', val: dueSoonCount, c: dueSoonCount > 0 ? 'var(--orange)' : 'var(--t3)', icon: '⏰' },
+        ].map((s, i) => (
+          <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
+            <div className="fs-11 text-muted">{s.icon} {s.label}</div>
+            <div className="fw-800 fs-15 mt-1" style={{ color: s.c }}>{s.val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Header */}
+      <div className="flex justify-between items-center mb-3">
+        <div className="fs-14 fw-700">🔄 Active Recurring ({activeItems.length})</div>
+        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm(BLANK_REC); setModal(true); }}>+ Add Recurring</button>
+      </div>
+
+      {loading ? <div className="spin-center"><div className="spin spin-lg" /></div>
+        : activeItems.length === 0
+          ? (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="empty"><div className="empty-icon">🔄</div><div className="empty-title">No recurring expenses</div><div className="empty-sub">Add rent, subscriptions, EMIs, SIPs etc.</div></div>
+            </div>
+          )
+          : (
+            <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
+              {activeItems.sort((a, b) => getDaysUntil(a.nextDue) - getDaysUntil(b.nextDue)).map(item => {
+                const days = getDaysUntil(item.nextDue);
+                const status = getDueStatus(days);
+                const freq = FREQ_OPTIONS.find(f => f.key === item.frequency);
+                return (
+                  <div key={item.id} style={{ background: 'var(--bg2)', border: `1px solid var(--border)`, borderRadius: 12, padding: '12px 16px', borderLeft: `4px solid ${status.color}` }}>
+                    <div className="flex justify-between items-start" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="fw-800 fs-14">{item.name}</span>
+                          <span style={{ background: status.bg, color: status.color, fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 20, whiteSpace: 'nowrap' }}>{status.label}</span>
+                          {item.lastPaid && <span className="text-muted fs-11">Last paid: {new Date(item.lastPaid).toLocaleDateString('en-IN')}</span>}
+                        </div>
+                        <div className="flex items-center gap-3 fs-12 text-muted" style={{ flexWrap: 'wrap' }}>
+                          {item.category && <span style={{ background: 'var(--bg3)', borderRadius: 20, padding: '1px 8px', fontWeight: 600 }}>{item.category}</span>}
+                          <span>🔁 {freq?.label}</span>
+                          {item.paidVia && <span>💳 {item.paidVia}</span>}
+                          <span>📅 Next: {new Date(item.nextDue).toLocaleDateString('en-IN')}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="fw-900 fs-16 amt-r">{fmt(parseFloat(item.amount))}</span>
+                        <button className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => recordPayment(item)}>✓ Pay</button>
+                        <button className="btn-icon" onClick={() => { setEdit(item); setForm({ ...item }); setModal(true); }}>✏️</button>
+                        <button className="btn-icon" style={{ fontSize: 12, color: 'var(--t3)' }} title="Pause" onClick={() => toggleActive(item)}>⏸️</button>
+                        <button className="btn-icon" onClick={() => setDelId(item.id)}>🗑️</button>
+                      </div>
+                    </div>
+                    {item.notes && <div className="fs-12 text-muted mt-2" style={{ fontStyle: 'italic' }}>📝 {item.notes}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+      {/* Inactive/Paused */}
+      {inactiveItems.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div className="fs-13 fw-700 text-muted mb-2">⏸️ Paused ({inactiveItems.length})</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {inactiveItems.map(item => (
+              <div key={item.id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <span className="fw-700 fs-13">{item.name}</span>
+                  <span className="text-muted fs-12 mx-2">·</span>
+                  <span className="text-muted fs-12">{fmt(parseFloat(item.amount))} / {item.frequency}</span>
+                </div>
+                <div className="flex gap-2">
+                  <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }} onClick={() => toggleActive(item)}>▶ Resume</button>
+                  <button className="btn-icon" onClick={() => setDelId(item.id)}>🗑️</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit Modal */}
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Recurring Expense' : '🔄 Add Recurring Expense'} onClose={() => { setModal(false); setEdit(null); }}>
+          <div className="fg"><label className="fl">Name</label>
+            <input className="fi" name="name" value={form.name} onChange={ch} placeholder="e.g. House Rent, Netflix, SIP, Gym" autoFocus />
+          </div>
+          <div className="frow">
+            <div className="fg"><label className="fl">Amount (Rs)</label>
+              <input className="fi" type="number" name="amount" value={form.amount} onChange={ch} placeholder="e.g. 12000" min="0" />
+            </div>
+            <div className="fg"><label className="fl">Frequency</label>
+              <select className="fi" name="frequency" value={form.frequency} onChange={ch}>
+                {FREQ_OPTIONS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="frow">
+            <div className="fg"><label className="fl">Category</label>
+              <select className="fi" name="category" value={form.category} onChange={ch}>
+                <option value="">— Select —</option>
+                {favCats.length > 0 && <optgroup label="⭐ Favourites">{favCats.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</optgroup>}
+                {otherCats.length > 0 && <optgroup label="All">{otherCats.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</optgroup>}
+              </select>
+            </div>
+            <div className="fg"><label className="fl">Next Due Date</label>
+              <input className="fi" type="date" name="nextDue" value={form.nextDue} onChange={ch} />
+            </div>
+          </div>
+          <div className="fg"><label className="fl">Paid Via (optional)</label>
+            <input className="fi" name="paidVia" value={form.paidVia} onChange={ch} placeholder="e.g. UPI, Credit Card, Auto-debit" />
+          </div>
+          <div className="fg"><label className="fl">Notes (optional)</label>
+            <input className="fi" name="notes" value={form.notes} onChange={ch} placeholder="e.g. HDFC credit card auto-pay" />
+          </div>
+          <div className="modal-foot">
+            <button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={save} disabled={adding}>{adding ? <span className="spin" /> : null} {edit ? 'Update' : 'Add Recurring'}</button>
+          </div>
+        </Modal>
+      )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
+
+// ─── Compare Tab ───────────────────────────────────────────
+const COMPARE_MODES = [
+  { key: '1y',  label: '1 Year',   months: 12 },
+  { key: '6m',  label: '6 Months', months: 6 },
+  { key: '3m',  label: '3 Months', months: 3 },
+  { key: 'week',label: 'Weekly',   months: 0 },
+];
+
+function CompareTab() {
+  const [mode, setMode] = useState('6m');
+  const [data, setData] = useState([]);
+  const [catData, setCatData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selCats, setSelCats] = useState(new Set());
+  const [allCats, setAllCats] = useState([]);
+  const [view, setView] = useState('bar'); // bar | table | category
+
+  const now = new Date();
+  const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      if (mode === 'week') {
+        // Weekly: last 12 weeks
+        const allItems = await expenseService.getAll({ year: now.getFullYear() });
+        const prevYearItems = await expenseService.getAll({ year: now.getFullYear() - 1 });
+        const combined = [...prevYearItems, ...allItems];
+
+        const weeks = [];
+        for (let w = 11; w >= 0; w--) {
+          const weekEnd = new Date(now);
+          weekEnd.setDate(now.getDate() - w * 7);
+          const weekStart = new Date(weekEnd);
+          weekStart.setDate(weekEnd.getDate() - 6);
+          const label = `${weekStart.getDate()} ${MONTHS_SHORT[weekStart.getMonth()]}`;
+          const weekItems = combined.filter(i => {
+            const d = new Date(i.date);
+            return d >= weekStart && d <= weekEnd;
+          });
+          const total = weekItems.reduce((s, i) => s + +i.amount, 0);
+          // category breakdown
+          const cats = {};
+          weekItems.forEach(i => { cats[i.category] = (cats[i.category] || 0) + +i.amount; });
+          weeks.push({ label, total, ...cats, _items: weekItems });
+        }
+        setData(weeks);
+        // Build category list from all weeks
+        const catSet = new Set(combined.map(i => i.category).filter(Boolean));
+        setAllCats([...catSet].sort());
+      } else {
+        // Monthly comparison
+        const mCount = COMPARE_MODES.find(m => m.key === mode).months;
+        const months = [];
+        for (let i = mCount - 1; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          months.push({ m: d.getMonth() + 1, y: d.getFullYear(), label: `${MONTHS_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}` });
+        }
+        const fetched = await Promise.all(months.map(({ m, y }) => expenseService.getAll({ month: m, year: y })));
+        const rows = months.map(({ label }, idx) => {
+          const items = fetched[idx];
+          const total = items.reduce((s, i) => s + +i.amount, 0);
+          const cats = {};
+          items.forEach(i => { cats[i.category] = (cats[i.category] || 0) + +i.amount; });
+          return { label, total, ...cats, _items: items };
+        });
+        setData(rows);
+        const catSet = new Set(fetched.flat().map(i => i.category).filter(Boolean));
+        setAllCats([...catSet].sort());
+      }
+    } catch (e) { toast.error('Failed to load'); console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, [mode]);
+
+  // Top categories by total spend across all periods
+  const topCats = allCats
+    .map(cat => ({ cat, total: data.reduce((s, d) => s + (d[cat] || 0), 0) }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 12);
+
+  const displayCats = selCats.size > 0 ? topCats.filter(c => selCats.has(c.cat)) : topCats.slice(0, 6);
+
+  const toggleCat = (cat) => setSelCats(s => { const n = new Set(s); n.has(cat) ? n.delete(cat) : n.add(cat); return n; });
+
+  // Summary stats
+  const totals = data.map(d => d.total);
+  const avg = totals.length > 0 ? totals.reduce((s, v) => s + v, 0) / totals.length : 0;
+  const maxPeriod = data.reduce((m, d) => d.total > (m?.total || 0) ? d : m, null);
+  const minPeriod = data.filter(d => d.total > 0).reduce((m, d) => d.total < (m?.total || Infinity) ? d : m, null);
+  const trend = totals.length >= 2 ? totals[totals.length - 1] - totals[0] : 0;
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    return (
+      <div style={{ background: 'var(--bg2)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', fontSize: 12, maxWidth: 220 }}>
+        <div className="fw-700 mb-2">{label}</div>
+        {payload.map((p, i) => (
+          <div key={i} className="flex justify-between gap-3 mb-1">
+            <span style={{ color: p.color }}>{p.name}</span>
+            <span className="fw-700">{fmt(p.value)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Mode selector */}
+      <div className="flex gap-2 mb-4" style={{ flexWrap: 'wrap' }}>
+        {COMPARE_MODES.map(m => (
+          <button key={m.key} onClick={() => setMode(m.key)}
+            style={{ padding: '7px 18px', borderRadius: 20, border: `2px solid ${mode === m.key ? 'var(--blue)' : 'var(--border2)'}`, background: mode === m.key ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: mode === m.key ? 'var(--blue)' : 'var(--t2)', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+            {m.label}
+          </button>
+        ))}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {['bar','table','category'].map(v => (
+            <button key={v} onClick={() => setView(v)}
+              style={{ padding: '6px 12px', borderRadius: 8, border: `1.5px solid ${view === v ? 'var(--blue)' : 'var(--border2)'}`, background: view === v ? 'rgba(77,158,255,.1)' : 'var(--bg3)', color: view === v ? 'var(--blue)' : 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              {v === 'bar' ? '📊 Chart' : v === 'table' ? '📋 Table' : '🗂️ By Category'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? <div className="spin-center"><div className="spin spin-lg" /></div> : (
+        <>
+          {/* Summary stats */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+            {[
+              { label: 'Average', val: fmt(avg), c: 'var(--blue)', icon: '📊' },
+              { label: 'Highest', val: maxPeriod ? `${fmt(maxPeriod.total)} (${maxPeriod.label})` : '—', c: 'var(--red)', icon: '📈' },
+              { label: 'Lowest', val: minPeriod ? `${fmt(minPeriod.total)} (${minPeriod.label})` : '—', c: 'var(--green)', icon: '📉' },
+              { label: 'Trend', val: `${trend >= 0 ? '+' : ''}${fmt(trend)}`, c: trend <= 0 ? 'var(--green)' : 'var(--red)', icon: trend <= 0 ? '✅' : '⚠️' },
+            ].map((s, i) => (
+              <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
+                <div className="fs-11 text-muted">{s.icon} {s.label}</div>
+                <div className="fw-800 fs-13 mt-1" style={{ color: s.c }}>{s.val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── BAR CHART VIEW ── */}
+          {view === 'bar' && (
+            <div className="card mb-4">
+              <div className="card-title">💰 Total Expenses — {COMPARE_MODES.find(m => m.key === mode)?.label} Comparison</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--t3)' }} tickLine={false} axisLine={false} />
+                  <YAxis tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} width={48} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="total" name="Total Spend" radius={[6,6,0,0]} maxBarSize={48}>
+                    {data.map((d, i) => (
+                      <Cell key={i} fill={d.total > avg * 1.2 ? '#f43f5e' : d.total < avg * 0.8 ? '#22c55e' : '#4d9eff'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              {/* Average line legend */}
+              <div className="flex gap-4 mt-2" style={{ flexWrap: 'wrap', fontSize: 11, color: 'var(--t3)' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#22c55e', display: 'inline-block' }} /> Below avg</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#4d9eff', display: 'inline-block' }} /> Near avg</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#f43f5e', display: 'inline-block' }} /> Above avg</span>
+                <span style={{ marginLeft: 'auto' }}>Avg: <strong>{fmt(avg)}</strong></span>
+              </div>
+            </div>
+          )}
+
+          {/* ── TABLE VIEW ── */}
+          {view === 'table' && (
+            <div className="card mb-4">
+              <div className="card-title">📋 Period-wise Breakdown</div>
+              <div className="tbl-wrap">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>Period</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
+                      <th style={{ textAlign: 'right' }}>vs Avg</th>
+                      <th style={{ textAlign: 'right' }}>vs Prev</th>
+                      <th>Top Category</th>
+                      <th style={{ textAlign: 'right' }}>Records</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.map((d, i) => {
+                      const vsAvg = d.total - avg;
+                      const vsPrev = i > 0 ? d.total - data[i-1].total : null;
+                      const topCat = allCats.map(c => ({ c, v: d[c] || 0 })).sort((a,b) => b.v - a.v)[0];
+                      return (
+                        <tr key={i} style={{ background: d.total > avg * 1.2 ? 'rgba(244,63,94,.04)' : d.total < avg * 0.8 ? 'rgba(34,197,94,.04)' : 'transparent' }}>
+                          <td className="fw-700">{d.label}</td>
+                          <td style={{ textAlign: 'right' }}><span className="amt fw-800">{fmt(d.total)}</span></td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span className={`fw-700 fs-12 ${vsAvg <= 0 ? 'amt-g' : 'amt-r'}`}>
+                              {vsAvg >= 0 ? '+' : ''}{fmt(vsAvg)}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {vsPrev !== null
+                              ? <span className={`fw-700 fs-12 ${vsPrev <= 0 ? 'amt-g' : 'amt-r'}`}>{vsPrev >= 0 ? '+' : ''}{fmt(vsPrev)}</span>
+                              : <span className="text-muted fs-12">—</span>}
+                          </td>
+                          <td>
+                            {topCat?.v > 0
+                              ? <span style={{ background: 'var(--bg3)', borderRadius: 20, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>{topCat.c} · {fmt(topCat.v)}</span>
+                              : <span className="text-muted fs-12">—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right' }} className="text-muted fs-12">{d._items?.length || 0}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td className="fw-700 text-muted fs-12" style={{ padding: '8px 14px' }}>AVERAGE</td>
+                      <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(avg)}</span></td>
+                      <td colSpan={4} />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── CATEGORY VIEW ── */}
+          {view === 'category' && (
+            <div>
+              {/* Category chips */}
+              <div className="card mb-3">
+                <div className="fs-13 fw-700 mb-2">Filter Categories <span className="text-muted fw-400">(top 12 by spend)</span></div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  <button onClick={() => setSelCats(new Set())}
+                    style={{ padding: '4px 12px', borderRadius: 20, border: `1.5px solid ${selCats.size === 0 ? 'var(--blue)' : 'var(--border2)'}`, background: selCats.size === 0 ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: selCats.size === 0 ? 'var(--blue)' : 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    All Top 6
+                  </button>
+                  {topCats.map((c, i) => (
+                    <button key={c.cat} onClick={() => toggleCat(c.cat)}
+                      style={{ padding: '4px 12px', borderRadius: 20, border: `1.5px solid ${selCats.has(c.cat) ? PALETTE[i % PALETTE.length] : 'var(--border2)'}`, background: selCats.has(c.cat) ? PALETTE[i % PALETTE.length] + '20' : 'var(--bg3)', color: selCats.has(c.cat) ? PALETTE[i % PALETTE.length] : 'var(--t2)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                      {c.cat} · {fmt(c.total)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Stacked bar chart by category */}
+              <div className="card mb-4">
+                <div className="card-title">🗂️ Category Breakdown by Period</div>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--t3)' }} tickLine={false} axisLine={false} />
+                    <YAxis tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} width={48} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {displayCats.map((c, i) => (
+                      <Bar key={c.cat} dataKey={c.cat} stackId="a" fill={PALETTE[topCats.findIndex(t => t.cat === c.cat) % PALETTE.length]} maxBarSize={52} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Category comparison table */}
+              <div className="card">
+                <div className="card-title">📊 Category × Period Table</div>
+                <div className="tbl-wrap">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Category</th>
+                        {data.map((d, i) => <th key={i} style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{d.label}</th>)}
+                        <th style={{ textAlign: 'right' }}>Total</th>
+                        <th style={{ textAlign: 'right' }}>Avg</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayCats.map((c, ci) => {
+                        const vals = data.map(d => d[c.cat] || 0);
+                        const catTotal = vals.reduce((s, v) => s + v, 0);
+                        const catAvg = vals.length > 0 ? catTotal / vals.length : 0;
+                        const maxVal = Math.max(...vals);
+                        return (
+                          <tr key={c.cat}>
+                            <td>
+                              <div className="flex items-center gap-2">
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: PALETTE[topCats.findIndex(t => t.cat === c.cat) % PALETTE.length], flexShrink: 0 }} />
+                                <span className="fw-600 fs-13">{c.cat}</span>
+                              </div>
+                            </td>
+                            {vals.map((v, i) => (
+                              <td key={i} style={{ textAlign: 'right' }}>
+                                <div>
+                                  <span className={`fw-700 fs-12 ${v === maxVal && v > 0 ? 'amt-r' : v === 0 ? 'text-muted' : ''}`}>{v > 0 ? fmt(v) : '—'}</span>
+                                  {v > 0 && <div style={{ background: PALETTE[ci % PALETTE.length] + '30', borderRadius: 3, height: 3, width: `${Math.max(8, (v / maxVal) * 60)}px`, marginLeft: 'auto', marginTop: 3 }} />}
+                                </div>
+                              </td>
+                            ))}
+                            <td style={{ textAlign: 'right' }}><span className="amt fw-800">{fmt(catTotal)}</span></td>
+                            <td style={{ textAlign: 'right' }} className="text-muted fs-12">{fmt(catAvg)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td className="fw-700 text-muted fs-12" style={{ padding: '8px 14px' }}>TOTAL</td>
+                        {data.map((d, i) => <td key={i} style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(d.total)}</span></td>)}
+                        <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(data.reduce((s, d) => s + d.total, 0))}</span></td>
+                        <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-700">{fmt(avg)}</span></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Expenses Page ────────────────────────────────────
 export default function ExpensesPage() {
   const now = new Date();
@@ -675,15 +1236,17 @@ export default function ExpensesPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+      <div className="flex gap-1 mb-4" style={{ borderBottom: '1px solid var(--border)', overflowX: 'auto' }}>
         {[
-          { key: 'list', label: '📋 List' },
-          { key: 'daily', label: '📅 Daily' },
-          { key: 'percent', label: '📊 % Breakdown' },
-          { key: 'groups', label: '🗂️ Group Summary' },
+          { key: 'list',      label: '📋 List' },
+          { key: 'recurring', label: '🔄 Recurring' },
+          { key: 'daily',     label: '📅 Daily' },
+          { key: 'percent',   label: '📊 % Breakdown' },
+          { key: 'groups',    label: '🗂️ Group Summary' },
+          { key: 'compare',   label: '🔀 Compare' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
-            style={{ padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
+            style={{ padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
           </button>
         ))}
@@ -775,9 +1338,11 @@ export default function ExpensesPage() {
         </>
       )}
 
-      {tab === 'daily' && <DailySpendingTab items={items} />}
-      {tab === 'percent' && <PercentageTab items={items} />}
-      {tab === 'groups' && <GroupSummaryTab items={items} />}
+      {tab === 'recurring' && <RecurringTab cats={cats} />}
+      {tab === 'daily'     && <DailySpendingTab items={items} />}
+      {tab === 'percent'   && <PercentageTab items={items} />}
+      {tab === 'groups'    && <GroupSummaryTab items={items} />}
+      {tab === 'compare'   && <CompareTab />}
 
       {modal && <Modal title={edit ? '✏️ Edit Expense' : '➕ Add Expense'} onClose={() => { setModal(false); setEdit(null); }}><ExpForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}

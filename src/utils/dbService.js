@@ -237,6 +237,30 @@ const DEFAULT_BROKERS = [
   { name: 'Aionion', icon: '🟣', color: '#8b5cf6' },
 ];
 
+// ─── RECURRING EXPENSES ───────────────────────────────────
+export const recurringService = {
+  async getAll() {
+    const q = query(collection(db, 'recurring'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async create(data) { return addDoc(collection(db, 'recurring'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'recurring', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'recurring', id)); }
+};
+
+// ─── FINANCIAL GOALS ─────────────────────────────────────
+export const goalsService = {
+  async getAll() {
+    const q = query(collection(db, 'goals'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async create(data) { return addDoc(collection(db, 'goals'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'goals', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'goals', id)); }
+};
+
 export const brokerService = {
   async getAll() {
     const q = query(collection(db, 'brokers'), where('userId', '==', uid()));
@@ -253,3 +277,5 @@ export const brokerService = {
   async update(id, data) { return updateDoc(doc(db, 'brokers', id), data); },
   async delete(id) { return deleteDoc(doc(db, 'brokers', id)); }
 };
+
+

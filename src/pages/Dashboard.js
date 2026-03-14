@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { incomeService, expenseService, investmentService, netWorthService, loanService } from '../utils/dbService';
+import { incomeService, expenseService, investmentService, netWorthService, loanService, goalsService } from '../utils/dbService';
 import { fmt, MONTHS, PALETTE } from '../utils/helpers';
 import { format, differenceInDays } from 'date-fns';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
@@ -83,6 +83,7 @@ export default function Dashboard() {
   const [catPie, setCatPie] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [insuranceAlerts, setInsuranceAlerts] = useState([]);
+  const [goals, setGoals] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { load(); }, []);
@@ -134,6 +135,9 @@ export default function Dashboard() {
         }));
         setInsuranceAlerts(getInsuranceDueAlerts(policies));
       } catch { /* insurance optional */ }
+
+      // Load goals
+      try { setGoals(await goalsService.getAll()); } catch { /* optional */ }
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -224,6 +228,56 @@ export default function Dashboard() {
           </table></div>
         </div>
       )}
+
+      {/* Financial Goals Widget */}
+      {goals.length > 0 && (() => {
+        const GOAL_COLORS_MAP = { blue:'#4d9eff', green:'#22c55e', purple:'#a78bfa', orange:'#fb923c', pink:'#f472b6', teal:'#2dd4bf', yellow:'#fbbf24', red:'#f43f5e' };
+        const activeGoals = goals.filter(g => {
+          const t = parseFloat(g.targetAmount) || 0;
+          const c = parseFloat(g.currentAmount) || 0;
+          return t > 0 && c < t;
+        }).sort((a, b) => ({ high:0, medium:1, low:2 }[a.priority] ?? 1) - ({ high:0, medium:1, low:2 }[b.priority] ?? 1)).slice(0, 4);
+        if (activeGoals.length === 0) return null;
+        return (
+          <div className="card" style={{ marginTop: 16 }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="card-title" style={{ marginBottom: 0 }}>🎯 Financial Goals</div>
+              <Link to="/goals" className="btn btn-secondary btn-sm">View All</Link>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px,1fr))', gap: 12 }}>
+              {activeGoals.map(g => {
+                const target = parseFloat(g.targetAmount) || 0;
+                const current = parseFloat(g.currentAmount) || 0;
+                const pct = target > 0 ? Math.min(100, (current / target) * 100) : 0;
+                const remaining = Math.max(0, target - current);
+                const colorHex = GOAL_COLORS_MAP[g.color] || '#4d9eff';
+                const due = g.targetDate ? new Date(g.targetDate) : null;
+                const daysLeft = due ? Math.round((due - new Date()) / (1000 * 60 * 60 * 24)) : null;
+                const monthlyNeeded = daysLeft > 0 ? remaining / (daysLeft / 30.44) : null;
+                return (
+                  <div key={g.id} style={{ background: 'var(--bg3)', borderRadius: 12, padding: '12px 14px', borderLeft: `4px solid ${colorHex}` }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span style={{ fontSize: 22 }}>{g.icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="fw-700 fs-13" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}</div>
+                        {daysLeft !== null && <div className="fs-11 text-muted">{daysLeft < 0 ? 'Overdue' : `${daysLeft}d left`}</div>}
+                      </div>
+                      <span className="fw-800 fs-12" style={{ color: colorHex }}>{pct.toFixed(0)}%</span>
+                    </div>
+                    <div style={{ background: 'var(--bg4)', borderRadius: 6, height: 6, overflow: 'hidden', marginBottom: 8 }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: colorHex, borderRadius: 6 }} />
+                    </div>
+                    <div className="flex justify-between fs-11">
+                      <span className="text-muted">{fmt(current)} / {fmt(target)}</span>
+                      {monthlyNeeded > 0 && <span style={{ color: colorHex, fontWeight: 700 }}>{fmt(monthlyNeeded)}/mo needed</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

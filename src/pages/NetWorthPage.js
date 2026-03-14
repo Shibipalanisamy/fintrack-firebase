@@ -576,6 +576,25 @@ export default function NetWorthPage() {
   const totalLiabilities = LIABILITY_TYPES.reduce((s, t) => s + getVal(liabilities, liabSubs, t.key), 0);
   const netWorth = totalAssets - totalLiabilities;
 
+  // ─── Snapshots (localStorage) ──────────────────────────
+  const SNAPSHOT_KEY = 'fintrack_nw_snapshots';
+  const [snapshots, setSnapshots] = useState(() => { try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || '[]'); } catch { return []; } });
+  const [showSnapshots, setShowSnapshots] = useState(false);
+
+  const takeSnapshot = () => {
+    const snap = { id: Date.now(), date: new Date().toISOString(), label: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), totalAssets, totalLiabilities, netWorth };
+    const updated = [snap, ...snapshots].slice(0, 24);
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(updated));
+    setSnapshots(updated);
+    toast.success(`📸 Snapshot saved — ${fmt(netWorth)}`);
+  };
+
+  const deleteSnapshot = (id) => {
+    const updated = snapshots.filter(s => s.id !== id);
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(updated));
+    setSnapshots(updated);
+  };
+
   if (!unlocked) return <LockedScreen page="networth" onUnlock={() => setUnlocked(true)} />;
   if (loading) return <div className="spin-center"><div className="spin spin-lg" /></div>;
 
@@ -583,7 +602,10 @@ export default function NetWorthPage() {
     <div>
       <div className="page-head">
         <div><div className="page-title">🏛️ Assets &amp; Liabilities</div><div className="page-sub">Track your complete financial position</div></div>
-        {activeTab === 'networth' && <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? <span className="spin" /> : null} 💾 Save</button>}
+        <div className="flex gap-2">
+          {activeTab === 'networth' && <button className="btn btn-secondary" onClick={() => setShowSnapshots(s => !s)}>📸 {snapshots.length > 0 ? `${snapshots.length} Snapshots` : 'Snapshots'}</button>}
+          {activeTab === 'networth' && <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? <span className="spin" /> : null} 💾 Save</button>}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -681,9 +703,70 @@ export default function NetWorthPage() {
           <div className="card" style={{ marginTop: 16, background: netWorth >= 0 ? 'rgba(34,197,94,.06)' : 'rgba(244,63,94,.06)', borderColor: netWorth >= 0 ? 'rgba(34,197,94,.3)' : 'rgba(244,63,94,.3)' }}>
             <div className="flex justify-between items-center">
               <div><div style={{ fontSize: 18, fontWeight: 900 }}>💎 Net Worth</div><div className="text-muted fs-12 mt-1">Total Assets − Total Liabilities</div></div>
-              <div style={{ fontSize: 28, fontWeight: 900, color: netWorth >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(netWorth)}</div>
+              <div className="flex items-center gap-3">
+                <div style={{ fontSize: 28, fontWeight: 900, color: netWorth >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(netWorth)}</div>
+                <button className="btn btn-secondary btn-sm" onClick={takeSnapshot} title="Save a snapshot of today's net worth">📸 Snap</button>
+              </div>
             </div>
           </div>
+
+          {/* Snapshots Panel */}
+          {showSnapshots && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div className="flex justify-between items-center mb-3">
+                <div className="card-title" style={{ marginBottom: 0 }}>📸 Net Worth Snapshots <span className="text-muted fw-400 fs-12">({snapshots.length}/24 saved · stored locally)</span></div>
+                <button className="btn btn-secondary btn-sm" onClick={takeSnapshot}>+ Take Now</button>
+              </div>
+              {snapshots.length === 0
+                ? <div className="text-muted fs-13" style={{ textAlign: 'center', padding: 20 }}>No snapshots yet — click "Snap" to save today's values</div>
+                : (
+                  <>
+                    {/* Mini chart */}
+                    {snapshots.length >= 2 && (() => {
+                      const sorted = [...snapshots].reverse();
+                      const max = Math.max(...sorted.map(s => s.netWorth));
+                      const min = Math.min(...sorted.map(s => s.netWorth));
+                      const range = max - min || 1;
+                      return (
+                        <div style={{ height: 60, display: 'flex', alignItems: 'flex-end', gap: 4, marginBottom: 16, padding: '0 4px' }}>
+                          {sorted.map((s, i) => {
+                            const h = Math.max(8, ((s.netWorth - min) / range) * 50 + 10);
+                            return (
+                              <div key={s.id} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                <div style={{ width: '100%', height: h, background: s.netWorth >= 0 ? 'var(--green)' : 'var(--red)', borderRadius: '3px 3px 0 0', opacity: 0.8 }} title={`${s.label}: ${fmt(s.netWorth)}`} />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                    <div className="tbl-wrap">
+                      <table className="tbl">
+                        <thead><tr><th>Date</th><th style={{ textAlign: 'right' }}>Assets</th><th style={{ textAlign: 'right' }}>Liabilities</th><th style={{ textAlign: 'right' }}>Net Worth</th><th style={{ textAlign: 'right' }}>Change</th><th></th></tr></thead>
+                        <tbody>{snapshots.map((s, i) => {
+                          const prev = snapshots[i + 1];
+                          const change = prev ? s.netWorth - prev.netWorth : null;
+                          return (
+                            <tr key={s.id}>
+                              <td className="fw-600 fs-13">{s.label}</td>
+                              <td style={{ textAlign: 'right' }} className="amt-g fs-12">{fmt(s.totalAssets)}</td>
+                              <td style={{ textAlign: 'right' }} className="amt-r fs-12">{fmt(s.totalLiabilities)}</td>
+                              <td style={{ textAlign: 'right' }}><span className="fw-800" style={{ color: s.netWorth >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(s.netWorth)}</span></td>
+                              <td style={{ textAlign: 'right' }}>
+                                {change !== null
+                                  ? <span className={`fw-700 fs-12 ${change >= 0 ? 'amt-g' : 'amt-r'}`}>{change >= 0 ? '+' : ''}{fmt(change)}</span>
+                                  : <span className="text-muted fs-12">—</span>}
+                              </td>
+                              <td><button className="btn-icon" onClick={() => deleteSnapshot(s.id)}>🗑️</button></td>
+                            </tr>
+                          );
+                        })}</tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+            </div>
+          )}
         </>
       )}
 

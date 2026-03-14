@@ -392,26 +392,39 @@ function DemergerSection() {
   const uniqueSymbols = [...new Set(investments.map(i => i.symbol).filter(Boolean))].sort();
 
   const handlePreview = () => {
-    if (!oldSymbol || !newParentSymbol || !newParentName) { toast.error('Fill Old Symbol, New Parent Symbol and Name'); return; }
-    const affected = investments.filter(i => i.symbol === oldSymbol);
-    if (affected.length === 0) { toast.error(`No holdings found for ${oldSymbol}`); return; }
-    const r = parseFloat(ratio) || 1;
-    const previewRows = affected.map(inv => ({
-      id: inv.id,
-      date: inv.purchaseDate,
-      qty: inv.quantity,
-      oldSymbol: inv.symbol,
-      oldName: inv.stockName,
-      newParentSymbol,
-      newParentName,
-      newParentQty: inv.quantity, // same qty, just renamed
-      ...(demergedSymbol ? {
-        demergedSymbol,
-        demergedName,
-        demergedQty: Math.floor(inv.quantity * r),
-      } : {}),
-    }));
-    setPreview(previewRows);
+    try {
+      if (!oldSymbol || !newParentSymbol || !newParentName) { toast.error('Fill Old Symbol, New Parent Symbol and Name'); return; }
+      const affected = investments.filter(i => i.symbol === oldSymbol);
+      if (affected.length === 0) { toast.error(`No holdings found for ${oldSymbol}`); return; }
+      const r = parseFloat(ratio) || 1;
+      const previewRows = affected.map(inv => {
+        // Safe date formatting — handle string, Date, or Firestore Timestamp
+        let dateStr = '—';
+        try {
+          const d = inv.purchaseDate?.toDate ? inv.purchaseDate.toDate() : new Date(inv.purchaseDate);
+          dateStr = isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN');
+        } catch { dateStr = String(inv.purchaseDate || '—'); }
+        return {
+          id: inv.id,
+          date: dateStr,
+          qty: inv.quantity,
+          oldSymbol: inv.symbol,
+          oldName: inv.stockName,
+          newParentSymbol,
+          newParentName,
+          newParentQty: inv.quantity,
+          ...(demergedSymbol ? {
+            demergedSymbol,
+            demergedName,
+            demergedQty: Math.floor(inv.quantity * r),
+          } : {}),
+        };
+      });
+      setPreview(previewRows);
+    } catch (e) {
+      console.error('Preview error:', e);
+      toast.error('Preview failed: ' + e.message);
+    }
   };
 
   const applyDemerger = async () => {
@@ -543,7 +556,7 @@ function DemergerSection() {
           </div>
 
           {/* Preview table */}
-          {preview && (
+          {preview && preview.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <div className="fs-13 fw-700 mb-2">📋 Preview — {preview.length} records will be affected:</div>
               <div className="tbl-wrap"><table className="tbl">
@@ -555,8 +568,8 @@ function DemergerSection() {
                     <th style={{ color: 'var(--blue)' }}>→ New Symbol</th>
                     <th style={{ color: 'var(--blue)' }}>→ New Name</th>
                     <th>Qty</th>
-                    {preview[0]?.demergedSymbol && <th style={{ color: 'var(--green)' }}>+ Demerged</th>}
-                    {preview[0]?.demergedSymbol && <th style={{ color: 'var(--green)' }}>+ Qty</th>}
+                    {preview.some(r => r.demergedSymbol) && <th style={{ color: 'var(--green)' }}>+ Demerged</th>}
+                    {preview.some(r => r.demergedSymbol) && <th style={{ color: 'var(--green)' }}>+ Qty</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -568,8 +581,8 @@ function DemergerSection() {
                       <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, color: 'var(--blue)' }}>{r.newParentSymbol}</span></td>
                       <td className="fs-12 fw-600" style={{ color: 'var(--blue)' }}>{r.newParentName}</td>
                       <td className="font-mono fs-12">{r.newParentQty}</td>
-                      {r.demergedSymbol && <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, color: 'var(--green)' }}>+ {r.demergedSymbol}</span></td>}
-                      {r.demergedSymbol && <td className="font-mono fs-12 amt-g">+ {r.demergedQty}</td>}
+                      {preview.some(p => p.demergedSymbol) && <td>{r.demergedSymbol ? <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, color: 'var(--green)' }}>+ {r.demergedSymbol}</span> : '—'}</td>}
+                      {preview.some(p => p.demergedSymbol) && <td className="font-mono fs-12 amt-g">{r.demergedQty != null ? `+ ${r.demergedQty}` : '—'}</td>}
                     </tr>
                   ))}
                 </tbody>

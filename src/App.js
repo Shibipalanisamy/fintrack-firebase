@@ -13,6 +13,7 @@ import LoanCalculatorPage from './pages/LoanCalculatorPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import InsurancePage from './pages/InsurancePage';
+import GoalsPage from './pages/GoalsPage';
 import './App.css';
 
 function Protected({ children }) {
@@ -42,6 +43,7 @@ function App() {
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/insurance" element={<InsurancePage />} />
+                    <Route path="/goals" element={<GoalsPage />} />
                   </Routes>
                 </Layout>
               </Protected>

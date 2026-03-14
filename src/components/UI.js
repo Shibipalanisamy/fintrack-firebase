@@ -6,15 +6,16 @@ import toast from 'react-hot-toast';
 import { MONTHS } from '../utils/helpers';
 
 const NAV = [
-  { icon: '📊', label: 'Dashboard', to: '/' },
-  { icon: '💵', label: 'Income', to: '/income' },
-  { icon: '💸', label: 'Expenses', to: '/expenses' },
-  { icon: '📈', label: 'Portfolio', to: '/portfolio' },
-  { icon: '🏛️', label: 'Net Worth', to: '/networth' },
+  { icon: '📊', label: 'Dashboard',      to: '/' },
+  { icon: '💵', label: 'Income',          to: '/income' },
+  { icon: '💸', label: 'Expenses',        to: '/expenses' },
+  { icon: '📈', label: 'Portfolio',       to: '/portfolio' },
+  { icon: '🏛️', label: 'Net Worth',       to: '/networth' },
+  { icon: '🎯', label: 'Goals',           to: '/goals' },
   { icon: '🧮', label: 'Loan Calculator', to: '/loans' },
-  { icon: '📉', label: 'Reports', to: '/reports' },
-  { icon: '🛡️', label: 'Insurance', to: '/insurance' },
-  { icon: '⚙️', label: 'Settings', to: '/settings' },
+  { icon: '📉', label: 'Reports',         to: '/reports' },
+  { icon: '🛡️', label: 'Insurance',       to: '/insurance' },
+  { icon: '⚙️', label: 'Settings',        to: '/settings' },
 ];
 
 export function Sidebar({ open, onClose }) {
@@ -51,7 +52,7 @@ export function Sidebar({ open, onClose }) {
   );
 }
 
-const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings' };
+const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals' };
 
 export function Layout({ children }) {
   const { isDark, toggle } = useTheme();
