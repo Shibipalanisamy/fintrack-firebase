@@ -45,7 +45,7 @@ function LockedScreen({ page, onUnlock }) {
 
 // ─── Sub-item Modal ────────────────────────────────────────
 function SubItemModal({ label, icon, items = [], onSave, onClose }) {
-  const [list, setList] = useState(items.length > 0 ? items : [{ name: '', amount: '' }]);
+  const [list, setList] = useState(items.length > 0 ? items.map(it => ({ ...it })) : [{ name: '', amount: '' }]);
   const add = () => setList(p => [...p, { name: '', amount: '' }]);
   const remove = (i) => setList(p => p.filter((_, idx) => idx !== i));
   const change = (i, field, val) => setList(p => p.map((it, idx) => idx === i ? { ...it, [field]: val } : it));
@@ -65,7 +65,7 @@ function SubItemModal({ label, icon, items = [], onSave, onClose }) {
             <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span>
             <input className="fi" style={{ paddingLeft: 26 }} type="number" placeholder="0" value={it.amount} onChange={e => change(i, 'amount', e.target.value)} min="0" />
           </div>
-          {list.length > 1 && <button onClick={() => remove(i)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}>✕</button>}
+          {list.length > 1 && <button onClick={() => remove(i)} style={{ background: 'rgba(244,63,94,.1)', border: '1px solid rgba(244,63,94,.3)', borderRadius: 6, color: 'var(--red)', cursor: 'pointer', fontSize: 14, padding: '6px 10px', flexShrink: 0 }} title="Delete this item">🗑️</button>}
         </div>
       ))}
       <button className="btn btn-secondary btn-sm" onClick={add} style={{ marginBottom: 12 }}>+ Add Another</button>
@@ -298,6 +298,7 @@ function GoldTracker() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentRate, setCurrentRate] = useState('');
+  const [goldKarat, setGoldKarat] = useState('24');
   const [modal, setModal] = useState(false);
   const [edit, setEdit] = useState(null);
   const [delId, setDelId] = useState(null);
@@ -314,9 +315,11 @@ function GoldTracker() {
   };
   const del = async () => { try { await goldService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
   const curRate = parseFloat(currentRate) || 0;
+  // Adjust for karat: 22K = 22/24 of 24K rate
+  const effectiveRate = goldKarat === '22' ? (curRate * 22) / 24 : curRate;
   const totalGrams = entries.reduce((s, e) => s + e.grams, 0);
   const totalInvested = entries.reduce((s, e) => s + e.grams * e.purchasePrice, 0);
-  const totalCurrentValue = curRate > 0 ? totalGrams * curRate : 0;
+  const totalCurrentValue = effectiveRate > 0 ? totalGrams * effectiveRate : 0;
   const totalGain = totalCurrentValue - totalInvested;
   return (
     <div className="card mb-4">
@@ -326,8 +329,19 @@ function GoldTracker() {
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.25)', borderRadius: 10, padding: '10px 14px', marginBottom: 14, marginTop: 10 }}>
         <span style={{ fontSize: 18 }}>🥇</span>
-        <div style={{ flex: 1 }}><div className="fs-12 fw-700" style={{ color: '#fbbf24' }}>Today's Gold Rate (per gram)</div><div className="fs-11 text-muted">Enter current 24K rate to see live value</div></div>
-        <div className="flex items-center gap-1"><span className="text-muted fs-13">Rs</span><input style={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, padding: '6px 10px', color: 'var(--text)', fontSize: 14, fontWeight: 700, width: 110, outline: 'none' }} type="number" value={currentRate} onChange={e => setCurrentRate(e.target.value)} placeholder="e.g. 9200" /></div>
+        <div style={{ flex: 1 }}><div className="fs-12 fw-700" style={{ color: '#fbbf24' }}>Today's Gold Rate (per gram)</div><div className="fs-11 text-muted">Enter 24K rate — select karat below to auto-adjust</div></div>
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1">
+            {['24', '22'].map(k => (
+              <button key={k} type="button" onClick={() => setGoldKarat(k)}
+                style={{ padding: '4px 10px', borderRadius: 20, border: `1.5px solid ${goldKarat === k ? '#fbbf24' : 'var(--border2)'}`, background: goldKarat === k ? 'rgba(251,191,36,.2)' : 'var(--bg3)', color: goldKarat === k ? '#fbbf24' : 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {k}K
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1"><span className="text-muted fs-13">Rs</span><input style={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, padding: '6px 10px', color: 'var(--text)', fontSize: 14, fontWeight: 700, width: 110, outline: 'none' }} type="number" value={currentRate} onChange={e => setCurrentRate(e.target.value)} placeholder="e.g. 9200" /></div>
+          {curRate > 0 && goldKarat === '22' && <div className="fs-11 text-muted">22K ≈ Rs {((curRate * 22) / 24).toFixed(0)}/g</div>}
+        </div>
       </div>
       {entries.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
@@ -342,7 +356,7 @@ function GoldTracker() {
           : <div className="tbl-wrap"><table className="tbl">
             <thead><tr><th>Date</th><th>Description</th><th style={{ textAlign: 'right' }}>Grams</th><th style={{ textAlign: 'right' }}>Buy Rate/g</th><th style={{ textAlign: 'right' }}>Invested</th><th style={{ textAlign: 'right' }}>Current Value</th><th style={{ textAlign: 'right' }}>Gain/Loss</th><th>Actions</th></tr></thead>
             <tbody>{entries.map(e => {
-              const invested = e.grams * e.purchasePrice, curVal = curRate > 0 ? e.grams * curRate : null, gain = curVal !== null ? curVal - invested : null;
+              const invested = e.grams * e.purchasePrice, curVal = effectiveRate > 0 ? e.grams * effectiveRate : null, gain = curVal !== null ? curVal - invested : null;
               return (<tr key={e.id}><td><div className="font-mono fs-12 text-muted">{fmtDate(e.purchaseDate)}</div><div className="fs-11 text-muted">{differenceInDays(new Date(), new Date(e.purchaseDate))} days ago</div></td><td className="fw-600 fs-13">{e.description || '—'}</td><td style={{ textAlign: 'right' }} className="fw-700">{e.grams.toFixed(3)} g</td><td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(e.purchasePrice)}</td><td style={{ textAlign: 'right' }}><span className="amt">{fmt(invested)}</span></td><td style={{ textAlign: 'right' }}>{curVal !== null ? <span className="amt amt-g">{fmt(curVal)}</span> : <span className="text-muted fs-12">Enter rate</span>}</td><td style={{ textAlign: 'right' }}>{gain !== null ? <span className={`amt ${gain >= 0 ? 'amt-g' : 'amt-r'}`}>{gain >= 0 ? '+' : ''}{fmt(gain)}</span> : '—'}</td><td><div className="actions"><button className="btn-icon" onClick={() => { setEdit(e); setForm({ purchaseDate: fmtDateInput(e.purchaseDate), grams: e.grams, purchasePrice: e.purchasePrice, description: e.description || '' }); setModal(true); }}>✏️</button><button className="btn-icon" onClick={() => setDelId(e.id)}>🗑️</button></div></td></tr>);
             })}</tbody>
           </table></div>}
@@ -420,8 +434,14 @@ function AssetRow({ type, label, icon, value, subItems = [], onValueChange, onSu
 // ─── Main NetWorth Page ────────────────────────────────────
 export default function NetWorthPage() {
   const [unlocked, setUnlocked] = useState(() => !getPin('networth'));
-  const [assets, setAssets] = useState({});       // key → amount (simple)
-  const [assetSubs, setAssetSubs] = useState({});  // key → [{name, amount}]
+
+  // ─── Snapshots — must be at top level, before any early returns ───
+  const SNAPSHOT_KEY = 'fintrack_nw_snapshots';
+  const [snapshots, setSnapshots] = useState(() => { try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || '[]'); } catch { return []; } });
+  const [showSnapshots, setShowSnapshots] = useState(false);
+
+  const [assets, setAssets] = useState({});
+  const [assetSubs, setAssetSubs] = useState({});
   const [liabilities, setLiabilities] = useState({});
   const [liabSubs, setLiabSubs] = useState({});
   const [loading, setLoading] = useState(true);
@@ -575,11 +595,6 @@ export default function NetWorthPage() {
   const totalAssets = ASSET_TYPES.reduce((s, t) => s + getVal(assets, assetSubs, t.key), 0);
   const totalLiabilities = LIABILITY_TYPES.reduce((s, t) => s + getVal(liabilities, liabSubs, t.key), 0);
   const netWorth = totalAssets - totalLiabilities;
-
-  // ─── Snapshots (localStorage) ──────────────────────────
-  const SNAPSHOT_KEY = 'fintrack_nw_snapshots';
-  const [snapshots, setSnapshots] = useState(() => { try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || '[]'); } catch { return []; } });
-  const [showSnapshots, setShowSnapshots] = useState(false);
 
   const takeSnapshot = () => {
     const snap = { id: Date.now(), date: new Date().toISOString(), label: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), totalAssets, totalLiabilities, netWorth };

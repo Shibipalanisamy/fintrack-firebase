@@ -83,6 +83,7 @@ export default function Dashboard() {
   const [catPie, setCatPie] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [insuranceAlerts, setInsuranceAlerts] = useState([]);
+  const [showInsurancePopup, setShowInsurancePopup] = useState(false);
   const [goals, setGoals] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -133,7 +134,11 @@ export default function Dashboard() {
           id: d.id, ...d.data(),
           dueDate: d.data().dueDate?.toDate?.() || new Date(d.data().dueDate),
         }));
-        setInsuranceAlerts(getInsuranceDueAlerts(policies));
+        const alerts = getInsuranceDueAlerts(policies);
+        setInsuranceAlerts(alerts);
+        // Auto-show popup if any are overdue or due today/urgently (within 5 days)
+        const urgent = alerts.filter(a => a.type === 'overdue' || a.type === 'today' || a.type === 'urgent');
+        if (urgent.length > 0) setShowInsurancePopup(true);
       } catch { /* insurance optional */ }
 
       // Load goals
@@ -150,8 +155,55 @@ export default function Dashboard() {
 
   if (loading) return <div className="spin-center"><div className="spin spin-lg" /></div>;
 
+  const urgentAlerts = insuranceAlerts.filter(a => a.type === 'overdue' || a.type === 'today' || a.type === 'urgent');
+
   return (
     <div>
+      {/* Insurance Urgent Popup */}
+      {showInsurancePopup && urgentAlerts.length > 0 && (
+        <div className="overlay" onClick={() => setShowInsurancePopup(false)}>
+          <div className="modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">🚨 Insurance Payment Alert</div>
+              <button className="btn-ghost" onClick={() => setShowInsurancePopup(false)} style={{ fontSize: 20 }}>✕</button>
+            </div>
+            <div style={{ padding: '0 20px 20px' }}>
+              <div className="text-muted fs-13 mb-3">
+                You have <strong>{urgentAlerts.length}</strong> insurance premium{urgentAlerts.length > 1 ? 's' : ''} requiring immediate attention:
+              </div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {urgentAlerts.map(a => {
+                  const st = ALERT_STYLES[a.type];
+                  return (
+                    <div key={a.id} style={{ background: st.bg, border: `1.5px solid ${st.border}`, borderRadius: 10, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 22 }}>{st.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <div className="fw-700 fs-14">{a.name}</div>
+                        <div className="fs-12" style={{ color: st.color }}>
+                          {a.type === 'overdue' ? `⚠️ ${Math.abs(a.days)} day${Math.abs(a.days) !== 1 ? 's' : ''} overdue — policy may lapse!` :
+                           a.type === 'today' ? '🔴 Due today — pay immediately!' :
+                           `⚠️ Due in ${a.days} day${a.days !== 1 ? 's' : ''}`}
+                        </div>
+                      </div>
+                      {a.amount > 0 && (
+                        <div style={{ textAlign: 'right' }}>
+                          <div className="fs-11 text-muted">Amount</div>
+                          <div className="fw-800 fs-14" style={{ color: st.color }}>{fmt(a.amount)}</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2 mt-4" style={{ justifyContent: 'flex-end' }}>
+                <button className="btn btn-secondary" onClick={() => setShowInsurancePopup(false)}>Dismiss</button>
+                <Link to="/insurance" className="btn btn-primary" onClick={() => setShowInsurancePopup(false)}>🛡️ Go to Insurance</Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-5">
         <h2 style={{ fontSize: 22, fontWeight: 800 }}>Good {greet}, {user?.displayName?.split(' ')[0] || 'there'}! 👋</h2>
         <div className="text-muted fs-13" style={{ marginTop: 4 }}>{format(now, 'EEEE, MMMM d, yyyy')}</div>

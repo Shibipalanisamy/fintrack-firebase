@@ -243,7 +243,7 @@ function StockMasterSection() {
                     <tr key={s.id}>
                       <td>
                         <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>
-                          {s.symbol}
+                          {s.symbol.replace(/^NSE:/i, '')}
                         </span>
                       </td>
                       <td className="fw-600 fs-13">{s.name}</td>

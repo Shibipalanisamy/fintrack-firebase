@@ -63,61 +63,191 @@ function BrokerDropdown({ brokers, value, onChange }) {
 }
 
 // ─── Investment Form ───────────────────────────────────────
-function InvForm({ item, stocks, brokers, onSave, onClose }) {
+function InvForm({ item, stocks, brokers, onSave, onSaveAndAnother, onClose }) {
+  const BLANK = { purchaseDate: today(), stockName: '', symbol: '', quantity: '', purchasePrice: '', currentPrice: '', brokerName: '', brokerage: '' };
   const [f, setF] = useState({
-    purchaseDate: today(), stockName: '', symbol: '', quantity: '', purchasePrice: '', currentPrice: '', brokerName: '', brokerage: '',
+    ...BLANK,
     ...(item ? { ...item, purchaseDate: fmtDateInput(item.purchaseDate), quantity: String(item.quantity || ''), purchasePrice: String(item.purchasePrice || ''), currentPrice: String(item.currentPrice || item.purchasePrice || ''), brokerage: String(item.brokerage || '') } : {})
   });
-  const [loading, setLoading] = useState(false);
+  const [brokeragePct, setBrokeragePct] = useState('0.5');
+  const [savingMode, setSavingMode] = useState(''); // '' | 'save' | 'another'
   const ch = e => setF(p => ({ ...p, [e.target.name]: e.target.value }));
+
+  const handlePctChange = (pct) => {
+    setBrokeragePct(pct);
+    const qty = parseFloat(f.quantity) || 0;
+    const price = parseFloat(f.purchasePrice) || 0;
+    const total = qty * price;
+    if (total > 0 && pct !== '') {
+      setF(p => ({ ...p, brokerage: ((total * parseFloat(pct)) / 100).toFixed(2) }));
+    } else if (pct === '') {
+      setF(p => ({ ...p, brokerage: '' }));
+    }
+  };
+
+  const chWithRecalc = e => {
+    setF(p => ({ ...p, [e.target.name]: e.target.value }));
+    if (brokeragePct !== '' && parseFloat(brokeragePct) > 0) {
+      const qty = parseFloat(e.target.name === 'quantity' ? e.target.value : f.quantity) || 0;
+      const price = parseFloat(e.target.name === 'purchasePrice' ? e.target.value : f.purchasePrice) || 0;
+      const total = qty * price;
+      if (total > 0) {
+        setF(p => ({ ...p, [e.target.name]: e.target.value, brokerage: ((total * parseFloat(brokeragePct)) / 100).toFixed(2) }));
+      }
+    }
+  };
+
   const handleStockSelect = (stock) => setF(p => ({ ...p, symbol: stock.symbol, stockName: stock.name }));
-  const submit = async e => {
-    e.preventDefault(); setLoading(true);
+
+  const validate = () => {
+    if (!f.symbol) { toast.error('Select a Symbol'); return false; }
+    if (!f.quantity || parseFloat(f.quantity) <= 0) { toast.error('Enter Quantity'); return false; }
+    if (!f.purchasePrice || parseFloat(f.purchasePrice) <= 0) { toast.error('Enter Buy Price'); return false; }
+    return true;
+  };
+
+  const buildPayload = () => {
+    const qty = parseFloat(f.quantity);
+    const buyPrice = parseFloat(f.purchasePrice);
+    const curPrice = f.currentPrice && f.currentPrice !== '' ? parseFloat(f.currentPrice) : buyPrice;
+    // Use symbol as stockName fallback if not auto-filled
+    const stockName = f.stockName || f.symbol;
+    return { ...f, stockName, quantity: qty, purchasePrice: buyPrice, currentPrice: curPrice, brokerage: parseFloat(f.brokerage) || 0 };
+  };
+
+  const handleSave = async e => {
+    e.preventDefault();
+    if (!validate()) return;
+    setSavingMode('save');
     try {
-      const qty = parseFloat(f.quantity), buyPrice = parseFloat(f.purchasePrice);
-      const curPrice = f.currentPrice && f.currentPrice !== '' ? parseFloat(f.currentPrice) : buyPrice;
-      await onSave({ ...f, quantity: qty, purchasePrice: buyPrice, currentPrice: curPrice, brokerage: parseFloat(f.brokerage) || 0 });
-    } finally { setLoading(false); }
+      await onSave(buildPayload());
+      // parent closes modal — no state update needed
+    } catch {
+      setSavingMode('');
+    }
+  };
+
+  const handleSaveAndAnother = async () => {
+    if (!validate()) return;
+    setSavingMode('another');
+    try {
+      await onSaveAndAnother(buildPayload());
+      // Reset form, keep broker + date
+      setF({ ...BLANK, brokerName: f.brokerName, purchaseDate: f.purchaseDate });
+      setBrokeragePct('0.5');
+    } catch {
+      // keep form as-is on error
+    } finally {
+      setSavingMode('');
+    }
   };
 
   const selectedBroker = brokers.find(b => b.name === f.brokerName);
+  const totalVal = (parseFloat(f.quantity) || 0) * (parseFloat(f.purchasePrice) || 0);
+  const brokerageAmt = parseFloat(f.brokerage) || 0;
+  const totalCost = totalVal + brokerageAmt;
+  const isSaving = savingMode !== '';
 
   return (
-    <form onSubmit={submit}>
-      {/* Broker selection */}
+    <form onSubmit={handleSave}>
+      {/* Broker */}
       <div className="fg">
         <label className="fl">Broker {selectedBroker && <span style={{ color: selectedBroker.color, fontSize: 11, fontWeight: 700 }}>● {selectedBroker.name}</span>}</label>
         <BrokerDropdown brokers={brokers} value={f.brokerName} onChange={val => setF(p => ({ ...p, brokerName: val }))} />
       </div>
 
-      <div className="fg"><label className="fl">Symbol</label><SymbolDropdown stocks={stocks} value={f.symbol} onChange={val => setF(p => ({ ...p, symbol: val }))} onSelect={handleStockSelect} /></div>
-      <div className="fg"><label className="fl">Stock Name {f.stockName && <span style={{ color: 'var(--green)', fontSize: 11 }}>✓ Auto-filled</span>}</label><input className="fi" type="text" name="stockName" value={f.stockName} onChange={ch} placeholder="Auto-filled when you select symbol" required /></div>
-      <div className="frow">
-        <div className="fg"><label className="fl">Purchase Date</label><input className="fi" type="date" name="purchaseDate" value={f.purchaseDate} onChange={ch} required /></div>
-        <div className="fg"><label className="fl">Quantity</label><input className="fi" type="number" name="quantity" value={f.quantity} onChange={ch} step="0.001" min="0" required /></div>
-      </div>
-      <div className="frow">
-        <div className="fg"><label className="fl">Buy Price (Rs)</label><input className="fi" type="number" name="purchasePrice" value={f.purchasePrice} onChange={ch} step="0.01" min="0" required /></div>
-        <div className="fg"><label className="fl">Current Price (Rs)</label><input className="fi" type="number" name="currentPrice" value={f.currentPrice} onChange={ch} step="0.01" min="0" placeholder="Optional" /></div>
-      </div>
+      {/* Symbol — auto-fills name silently */}
       <div className="fg">
-        <label className="fl">Brokerage / Commission (Rs) <span className="text-muted fs-11">optional</span></label>
-        <div style={{ position: 'relative' }}>
-          <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span>
-          <input className="fi" type="number" name="brokerage" value={f.brokerage} onChange={ch} step="0.01" min="0" placeholder="e.g. 20.00" style={{ paddingLeft: 28 }} />
-        </div>
+        <label className="fl">Symbol {f.stockName && <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600 }}>✓ {f.stockName}</span>}</label>
+        <SymbolDropdown stocks={stocks} value={f.symbol} onChange={val => setF(p => ({ ...p, symbol: val }))} onSelect={handleStockSelect} />
       </div>
 
-      {/* Live preview */}
-      {f.quantity && f.purchasePrice && (
-        <div style={{ background: 'var(--bg3)', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 12 }}>
-          <div className="flex justify-between"><span className="text-muted">Total Invested</span><span className="fw-700">{fmt(f.quantity * f.purchasePrice)}</span></div>
-          {f.brokerage > 0 && <div className="flex justify-between mt-1"><span className="text-muted">Brokerage</span><span className="fw-700 amt-r">{fmt(f.brokerage)}</span></div>}
-          {f.brokerage > 0 && <div className="flex justify-between mt-1"><span className="text-muted">Total Cost (incl. brokerage)</span><span className="fw-700">{fmt(f.quantity * f.purchasePrice + parseFloat(f.brokerage || 0))}</span></div>}
-          {f.currentPrice && <div className="flex justify-between mt-1"><span className="text-muted">Current Value</span><span className={`fw-700 ${f.currentPrice >= f.purchasePrice ? 'amt-g' : 'amt-r'}`}>{fmt(f.quantity * f.currentPrice)}</span></div>}
+      <div className="frow">
+        <div className="fg"><label className="fl">Purchase Date</label><input className="fi" type="date" name="purchaseDate" value={f.purchaseDate} onChange={ch} required /></div>
+        <div className="fg"><label className="fl">Quantity</label><input className="fi" type="number" name="quantity" value={f.quantity} onChange={chWithRecalc} step="0.001" min="0" placeholder="e.g. 10" /></div>
+      </div>
+      <div className="frow">
+        <div className="fg"><label className="fl">Buy Price (Rs)</label><input className="fi" type="number" name="purchasePrice" value={f.purchasePrice} onChange={chWithRecalc} step="0.01" min="0" placeholder="e.g. 500" /></div>
+        <div className="fg"><label className="fl">Current Price (Rs) <span className="text-muted fs-11">optional</span></label><input className="fi" type="number" name="currentPrice" value={f.currentPrice} onChange={ch} step="0.01" min="0" placeholder="Leave blank = buy price" /></div>
+      </div>
+
+      {/* Brokerage */}
+      <div style={{ background: 'rgba(77,158,255,.06)', border: '1.5px solid rgba(77,158,255,.2)', borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+        <div className="flex items-center gap-2 mb-2">
+          <span>💳</span>
+          <span className="fw-700 fs-13">Brokerage / Commission</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--blue)', fontWeight: 600 }}>% → auto-calculates Rs</span>
+        </div>
+        <div className="flex gap-2 mb-2" style={{ flexWrap: 'wrap' }}>
+          {['0', '0.1', '0.25', '0.5', '1'].map(pct => (
+            <button key={pct} type="button" onClick={() => handlePctChange(pct)}
+              style={{ padding: '3px 10px', borderRadius: 20, border: `1.5px solid ${brokeragePct === pct ? 'var(--blue)' : 'var(--border2)'}`, background: brokeragePct === pct ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: brokeragePct === pct ? 'var(--blue)' : 'var(--t2)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              {pct === '0' ? 'Free' : `${pct}%`}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 items-center">
+          <div style={{ position: 'relative', width: 100, flexShrink: 0 }}>
+            <input type="number" value={brokeragePct} onChange={e => handlePctChange(e.target.value)}
+              step="0.01" min="0" placeholder="0.5"
+              style={{ width: '100%', padding: '9px 26px 9px 10px', borderRadius: 8, border: '1.5px solid var(--blue)', background: 'var(--bg3)', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none', fontFamily: 'inherit' }} />
+            <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 13, fontWeight: 800, color: 'var(--blue)' }}>%</span>
+          </div>
+          <span style={{ color: 'var(--t3)', fontSize: 18 }}>→</span>
+          <div style={{ position: 'relative', flex: 1 }}>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span>
+            <input className="fi" type="number" name="brokerage" value={f.brokerage}
+              onChange={e => { ch(e); setBrokeragePct(''); }} step="0.01" min="0" placeholder="0.00" style={{ paddingLeft: 30, fontWeight: 700 }} />
+          </div>
+        </div>
+        {totalVal > 0 && (
+          <div style={{ marginTop: 8, background: 'var(--bg3)', borderRadius: 8, padding: '6px 10px', fontSize: 12 }}>
+            {brokeragePct && parseFloat(brokeragePct) > 0
+              ? <span style={{ color: 'var(--blue)', fontWeight: 600 }}>{fmt(totalVal)} × {brokeragePct}% = <strong>Rs {f.brokerage || '0'}</strong></span>
+              : <span className="text-muted">No brokerage</span>}
+          </div>
+        )}
+      </div>
+
+      {/* Live summary */}
+      {totalVal > 0 && (
+        <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
+          <div className="fs-12 fw-700 text-muted mb-2">📊 Summary</div>
+          <div className="flex justify-between fs-12 mb-1"><span className="text-muted">Qty × Buy Price</span><span className="fw-700">{f.quantity} × {fmt(parseFloat(f.purchasePrice))} = {fmt(totalVal)}</span></div>
+          {brokerageAmt > 0 && <div className="flex justify-between fs-12 mb-1"><span className="text-muted">+ Brokerage</span><span className="fw-700 amt-r">+ {fmt(brokerageAmt)}</span></div>}
+          <div className="flex justify-between fs-13" style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }}>
+            <span className="fw-800">Total Cost</span>
+            <span className="fw-900" style={{ color: 'var(--blue)' }}>{fmt(totalCost)}</span>
+          </div>
+          {f.currentPrice && parseFloat(f.currentPrice) > 0 && (
+            <div className="flex justify-between fs-12 mt-1">
+              <span className="text-muted">Current Value</span>
+              <span className={`fw-700 ${parseFloat(f.currentPrice) >= parseFloat(f.purchasePrice) ? 'amt-g' : 'amt-r'}`}>{fmt((parseFloat(f.quantity) || 0) * parseFloat(f.currentPrice))}</span>
+            </div>
+          )}
         </div>
       )}
-      <div className="modal-foot"><button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button><button type="submit" className="btn btn-primary" disabled={loading}>{loading ? <span className="spin" /> : null}{item ? 'Update' : 'Add Stock'}</button></div>
+
+      {/* Footer — visually distinct buttons */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        {(() => {
+          const isSaving = savingMode !== '';
+          return (<>
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={isSaving}>✕ Cancel</button>
+            {!item && onSaveAndAnother && (
+              <button type="button" disabled={isSaving}
+                onClick={handleSaveAndAnother}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: '2px solid var(--purple)', background: savingMode === 'another' ? 'rgba(167,139,250,.2)' : 'rgba(167,139,250,.08)', color: 'var(--purple)', fontWeight: 800, fontSize: 13, cursor: isSaving ? 'not-allowed' : 'pointer' }}>
+                {savingMode === 'another' ? <><span className="spin" style={{ width: 14, height: 14, borderWidth: 2, borderColor: 'var(--purple)', borderTopColor: 'transparent' }} /> Saving...</> : '➕ Save & Add Another'}
+              </button>
+            )}
+            <button type="submit" disabled={isSaving}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 20px', borderRadius: 10, border: 'none', background: item ? 'var(--orange)' : 'var(--green)', color: '#fff', fontWeight: 800, fontSize: 13, cursor: isSaving ? 'not-allowed' : 'pointer' }}>
+              {savingMode === 'save' ? <><span className="spin" style={{ width: 14, height: 14, borderWidth: 2, borderColor: '#fff', borderTopColor: 'transparent' }} /> Saving...</> : item ? '✏️ Update Stock' : '✅ Save Stock'}
+            </button>
+          </>);
+        })()}
+      </div>
     </form>
   );
 }
@@ -330,7 +460,7 @@ function BrokerReportTab({ items, brokers }) {
                         </tr></thead>
                         <tbody>{symList.map(s => (
                           <tr key={s.sym}>
-                            <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, background: 'var(--bg3)', padding: '2px 7px', borderRadius: 5, color }}>{s.sym}</span></td>
+                            <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, background: 'var(--bg3)', padding: '2px 7px', borderRadius: 5, color }}>{s.sym.replace(/^NSE:/i, '')}</span></td>
                             <td className="fs-12 fw-600">{s.name}</td>
                             <td style={{ textAlign: 'right' }} className="font-mono fs-12">{s.qty}</td>
                             <td style={{ textAlign: 'right' }}><span className="amt">{fmt(s.invested)}</span></td>
@@ -513,8 +643,35 @@ function DividendTab({ items, stocks }) {
   const [delId, setDelId] = useState(null);
   const [search, setSearch] = useState('');
   const [checkedSymbols, setCheckedSymbols] = useState(new Set());
+  const [importing, setImporting] = useState(false);
   const [form, setForm] = useState({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' });
   const loadDividends = async () => { setLoading(true); try { setDividends(await dividendService.getAll()); } catch { toast.error('Failed'); } finally { setLoading(false); } };
+
+  const handleCSVImport = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    setImporting(true);
+    try {
+      const rows = await importCSV(file);
+      const valid = rows.filter(r => (r.symbol || r.Symbol || r.stockName || r['Stock Name']) && (r.dividendPerShare || r['Dividend/Share'] || r.totalAmount || r['Total Amount']));
+      if (valid.length === 0) { toast.error('No valid rows found. Check CSV format.'); return; }
+      let imported = 0;
+      for (const r of valid) {
+        const symbol       = (r.symbol        || r.Symbol        || '').toUpperCase();
+        const stockName    =  r.stockName      || r['Stock Name'] || symbol;
+        const date         =  r.date           || r.Date          || today();
+        const shares       = parseFloat(r.shares          || r.Shares          || 0) || 0;
+        const dps          = parseFloat(r.dividendPerShare || r['Dividend/Share']|| 0) || 0;
+        const totalAmount  = parseFloat(r.totalAmount      || r['Total Amount'] || 0) || (shares * dps);
+        const notes        =  r.notes          || r.Notes         || '';
+        if (!symbol && !stockName) continue;
+        await dividendService.create({ symbol, stockName, date, shares, dividendPerShare: dps, totalAmount, notes });
+        imported++;
+      }
+      toast.success(`✅ Imported ${imported} dividend records!`);
+      loadDividends();
+    } catch (err) { toast.error('Import failed: ' + err.message); }
+    finally { setImporting(false); e.target.value = ''; }
+  };
   useEffect(() => { loadDividends(); }, []);
   const ch = e => setForm(p => ({ ...p, [e.target.name]: e.target.value }));
   const handleSharesOrDPS = (field, val) => { setForm(p => { const u = { ...p, [field]: val }; const s = parseFloat(field === 'shares' ? val : p.shares) || 0; const d = parseFloat(field === 'dividendPerShare' ? val : p.dividendPerShare) || 0; if (s && d) u.totalAmount = (s * d).toFixed(2); return u; }); };
@@ -551,7 +708,26 @@ function DividendTab({ items, stocks }) {
 
       <div className="flex justify-between items-center mb-3">
         <div className="card-title" style={{ marginBottom: 0 }}>💸 Dividend History</div>
-        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' }); setModal(true); }}>+ Add Dividend</button>
+        <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+          {/* Export */}
+          {dividends.length > 0 && (
+            <button className="btn btn-secondary btn-sm" onClick={() => exportCSV(
+              dividends.map(d => ({ date: typeof d.date === 'object' ? fmtDate(d.date) : d.date, symbol: d.symbol || '', stockName: d.stockName || '', shares: d.shares || 0, dividendPerShare: d.dividendPerShare || 0, totalAmount: d.totalAmount || 0, notes: d.notes || '' })),
+              'dividends.csv'
+            )}>⬇️ Export CSV</button>
+          )}
+          {/* Import */}
+          <label className="btn btn-secondary btn-sm" style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1 }}>
+            {importing ? <><span className="spin" style={{ width: 11, height: 11, borderWidth: 2 }} /> Importing...</> : '⬆️ Import CSV'}
+            <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
+          </label>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' }); setModal(true); }}>+ Add Dividend</button>
+        </div>
+      </div>
+
+      {/* CSV Format hint */}
+      <div style={{ background: 'rgba(77,158,255,.06)', border: '1px solid rgba(77,158,255,.18)', borderRadius: 8, padding: '8px 14px', marginBottom: 12, fontSize: 11, color: 'var(--t2)' }}>
+        📋 <strong>CSV columns:</strong> date, symbol, stockName, shares, dividendPerShare, totalAmount, notes &nbsp;·&nbsp; <span className="text-muted">Export first to see the exact format</span>
       </div>
 
       {/* Search box */}
@@ -666,6 +842,7 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
     else if (sortBy === 'invested') { va = a.totalInvested; vb = b.totalInvested; }
     else if (sortBy === 'pnl') { va = a.profitLoss; vb = b.profitLoss; }
     else if (sortBy === 'alloc') { va = parseFloat(a.allocation); vb = parseFloat(b.allocation); }
+    else if (sortBy === 'qty') { va = a.quantity; vb = b.quantity; }
     else { va = 0; vb = 0; }
     return sortDir === 'asc' ? va - vb : vb - va;
   });
@@ -799,7 +976,7 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
               <th><SH field="symbol" label="Symbol" /></th>
               <th>Stock</th>
               <th>Broker</th>
-              <th>Qty</th>
+              <th><SH field="qty" label="Qty" /></th>
               <th style={{ textAlign: 'right' }}>Buy Rs</th>
               <th style={{ textAlign: 'right' }}>Current Rs</th>
               <th style={{ textAlign: 'right' }}><SH field="invested" label="Invested" /></th>
@@ -815,7 +992,7 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
               <tr key={i.id} style={{ background: selected.has(i.id) ? 'rgba(77,158,255,.07)' : 'transparent' }}>
                 <td><input type="checkbox" checked={selected.has(i.id)} onChange={() => toggleOne(i.id)} style={{ width: 15, height: 15, cursor: 'pointer', accentColor: 'var(--blue)' }} /></td>
                 <td style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--t2)', whiteSpace: 'nowrap' }}>{fmtDate(i.purchaseDate)}</td>
-                <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>{i.symbol || '—'}</span></td>
+                <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>{(i.symbol || '—').replace(/^NSE:/i, '')}</span></td>
                 <td className="fw-600 fs-13">{i.stockName}</td>
                 <td>{i.brokerName ? <span style={{ background: getBrokerColor(i.brokerName) + '18', color: getBrokerColor(i.brokerName), border: `1px solid ${getBrokerColor(i.brokerName)}40`, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>{getBrokerIcon(i.brokerName)} {i.brokerName}</span> : <span className="text-muted fs-11">—</span>}</td>
                 <td className="font-mono fs-12">{i.quantity}</td>
@@ -1024,6 +1201,14 @@ export default function PortfolioPage() {
       setModal(false); setEdit(null); load();
     } catch { toast.error('Failed'); }
   };
+
+  const saveAndAnother = async data => {
+    try {
+      await investmentService.create(data);
+      toast.success('Stock added! Form ready for next entry.');
+      load(); // refresh data in background — modal stays open
+    } catch { toast.error('Failed'); }
+  };
   const del = async () => { try { await investmentService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
 
   const [importing, setImporting] = useState(false);
@@ -1206,7 +1391,7 @@ export default function PortfolioPage() {
       {tab === 'dividends' && <DividendTab items={itemsWithAlloc} stocks={stocks} />}
 
       {modal && <Modal title={edit ? '✏️ Edit Stock' : '➕ Add Stock'} onClose={() => { setModal(false); setEdit(null); }}>
-        <InvForm item={edit} stocks={stocks} brokers={brokers} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
+        <InvForm item={edit} stocks={stocks} brokers={brokers} onSave={save} onSaveAndAnother={saveAndAnother} onClose={() => { setModal(false); setEdit(null); }} />
       </Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
     </div>

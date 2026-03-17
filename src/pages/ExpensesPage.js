@@ -29,7 +29,7 @@ function NoteCell({ note }) {
 const EXPENSE_GROUPS = [
   {
     key: 'house', label: 'House Expenses', icon: '🏠', color: '#f97316',
-    categories: ['Gas Booking or Advance','Snacks','Grocery','Water Can and Advance','Internet / Modem','Meat or Egg','Dry Fruits','Flour','Vegetables for Office','Vegetables','Vegetable','Milk','Oil','Fruits','Rice','Electricity Bill','Curd','Paneer','Basic Needs','House Rent / Advance']
+    categories: ['Gas Booking or Advance','Snacks','Grocery','Water Can and Advance','Internet / Modem','Meat or Egg','Dry Fruits','Flour','Vegetables for Office','Vegetables','Vegetable','Milk','Oil','Fruits','Rice','Electricity Bill','Curd','Paneer','House Rent / Advance','House Rent','Rent','Basic Needs','Wife Basic Needs']
   },
   {
     key: 'investment', label: 'Investments', icon: '📈', color: '#22c55e',
@@ -344,9 +344,12 @@ function GroupSummaryTab({ items }) {
 function DailySpendingTab({ items }) {
   const [expandedDay, setExpandedDay] = useState(null);
 
-  // Group items by date
+  // Exclude recurring-generated expenses entirely from Daily view
+  const nonRecurringItems = items.filter(i => !String(i.notes || '').startsWith('[Recurring]'));
+
+  // Group by date — only non-recurring
   const dayMap = {};
-  items.forEach(i => {
+  nonRecurringItems.forEach(i => {
     const d = typeof i.date === 'object' ? i.date.toISOString().split('T')[0] : String(i.date).split('T')[0];
     if (!dayMap[d]) dayMap[d] = { date: d, total: 0, items: [] };
     dayMap[d].total += +i.amount;
@@ -354,7 +357,7 @@ function DailySpendingTab({ items }) {
   });
 
   const days = Object.values(dayMap).sort((a, b) => new Date(b.date) - new Date(a.date));
-  const monthTotal = items.reduce((s, i) => s + +i.amount, 0);
+  const monthTotal = nonRecurringItems.reduce((s, i) => s + +i.amount, 0);
   const avgPerDay = days.length > 0 ? monthTotal / days.length : 0;
   const maxDay = days.length > 0 ? Math.max(...days.map(d => d.total)) : 0;
 
@@ -475,7 +478,7 @@ function DailySpendingTab({ items }) {
                         <div className="flex gap-2 mt-1" style={{ flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 10, background: 'rgba(77,158,255,.1)', color: 'var(--blue)', borderRadius: 20, padding: '1px 7px', fontWeight: 600 }}>{i.category}</span>
                           {i.paidVia && <span style={{ fontSize: 10, background: 'var(--bg2)', color: 'var(--t2)', borderRadius: 20, padding: '1px 7px', fontWeight: 600 }}>💳 {i.paidVia}</span>}
-                          {i.notes && <span className="fs-11 text-muted">{i.notes}</span>}
+                          {i.notes && !i.notes.startsWith('[Recurring]') && <span className="fs-11 text-muted">{i.notes}</span>}
                         </div>
                       </div>
                       <span style={{ fontWeight: 800, fontSize: 14, color: 'var(--red)', flexShrink: 0 }}>{fmt(i.amount)}</span>

@@ -297,11 +297,37 @@ export default function LoanCalculatorPage() {
 
   const ch = e => setCalc(p => ({ ...p, [e.target.name]: e.target.value }));
 
+  // Totals across all saved loans
+  const totalLoanAmount   = loans.reduce((s, l) => s + (l.amount || 0), 0);
+  const totalInterestAll  = loans.reduce((s, l) => s + (l.totalInterest || 0), 0);
+  const totalPaymentAll   = loans.reduce((s, l) => s + (l.totalPayment || 0), 0);
+  const totalPaidAll      = loans.reduce((s, l) => s + (loanPayments[l.id] || 0), 0);
+  const totalOutstanding  = loans.reduce((s, l) => s + Math.max(0, l.amount - (loanPayments[l.id] || 0)), 0);
+
   return (
     <div>
       <div className="page-head">
         <div><div className="page-title">🧮 Loan Calculator</div><div className="page-sub">Calculate EMI & track payments</div></div>
       </div>
+
+      {/* ── Top Summary Stats ── */}
+      {loans.length > 0 && (
+        <div className="stats" style={{ marginBottom: 20 }}>
+          {[
+            { icon: '💰', label: 'Total Loan Amount',   val: fmt(totalLoanAmount),  c: 'var(--blue)' },
+            { icon: '💸', label: 'Total Interest',       val: fmt(totalInterestAll), c: 'var(--red)' },
+            { icon: '📦', label: 'Total Payment',        val: fmt(totalPaymentAll),  c: 'var(--orange)' },
+            { icon: '✅', label: 'Total Paid',           val: fmt(totalPaidAll),     c: 'var(--green)' },
+            { icon: '⏳', label: 'Outstanding Balance',  val: fmt(totalOutstanding), c: totalOutstanding > 0 ? 'var(--red)' : 'var(--green)' },
+          ].map((s, i) => (
+            <div key={i} className="stat" style={{ '--c': s.c }}>
+              <div className="stat-icon">{s.icon}</div>
+              <div className="stat-val" style={{ color: s.c }}>{s.val}</div>
+              <div className="stat-label">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
         {/* Calculator */}
