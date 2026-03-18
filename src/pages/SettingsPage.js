@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 // ─── Category Form ─────────────────────────────────────────
 function CatForm({ item, type, onSave, onClose }) {
-  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, ...(item || {}) });
+  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, isFixed: false, ...(item || {}) });
   const [loading, setLoading] = useState(false);
   const submit = async e => { e.preventDefault(); setLoading(true); try { await onSave(f); } finally { setLoading(false); } };
   return (
@@ -29,6 +29,23 @@ function CatForm({ item, type, onSave, onClose }) {
           <span className="fs-13 text-muted">{f.isFavorite ? '⭐ Marked as Favourite' : 'Mark as Favourite'}</span>
         </div>
       </div>
+      {type === 'expense' && (
+        <div className="fg">
+          <label className="fl">Expense Type <span className="text-muted fs-11">(affects charts & global filter)</span></label>
+          <div className="flex gap-2 mt-1">
+            {[
+              { key: false, label: '🔀 Variable', desc: 'Day-to-day spending (Groceries, Petrol…)' },
+              { key: true,  label: '📌 Fixed',    desc: 'Same every month (Rent, RD, Gold…)' },
+            ].map(opt => (
+              <button key={String(opt.key)} type="button" onClick={() => setF(p => ({ ...p, isFixed: opt.key }))}
+                style={{ flex:1, padding:'10px 12px', borderRadius:10, border:`2px solid ${f.isFixed === opt.key ? (opt.key ? 'var(--orange)' : 'var(--blue)') : 'var(--border2)'}`, background: f.isFixed === opt.key ? (opt.key ? 'rgba(249,115,22,.1)' : 'rgba(77,158,255,.1)') : 'var(--bg3)', cursor:'pointer', textAlign:'left' }}>
+                <div className="fw-700 fs-13" style={{ color: f.isFixed === opt.key ? (opt.key ? 'var(--orange)' : 'var(--blue)') : 'var(--t2)' }}>{opt.label}</div>
+                <div className="fs-11 text-muted mt-1">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="modal-foot">
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? <span className="spin" /> : null}{item ? 'Update' : 'Add Category'}</button>
@@ -62,6 +79,11 @@ function CatSection({ type, label, icon }) {
     catch { toast.error('Failed'); }
   };
 
+  const toggleFixed = async (cat) => {
+    try { await categoryService.update(cat.id, { ...cat, isFixed: !cat.isFixed }); toast.success(!cat.isFixed ? '📌 Marked as Fixed' : '🔀 Marked as Variable'); load(); }
+    catch { toast.error('Failed'); }
+  };
+
   const filtered = cats.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
   const favCats = filtered.filter(c => c.isFavorite);
   const otherCats = filtered.filter(c => !c.isFavorite);
@@ -69,7 +91,14 @@ function CatSection({ type, label, icon }) {
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-3">
-        <div className="card-title" style={{ marginBottom: 0 }}>{icon} {label} Categories <span className="text-muted fs-12">({cats.length})</span></div>
+        <div className="card-title" style={{ marginBottom: 0 }}>
+          {icon} {label} Categories <span className="text-muted fs-12">({cats.length})</span>
+          {type === 'expense' && cats.filter(c=>c.isFixed).length > 0 && (
+            <span style={{ marginLeft:8, fontSize:11, background:'rgba(249,115,22,.12)', color:'var(--orange)', borderRadius:20, padding:'1px 8px', fontWeight:700 }}>
+              📌 {cats.filter(c=>c.isFixed).length} Fixed
+            </span>
+          )}
+        </div>
         <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add</button>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, padding: '7px 12px', marginBottom: 14 }}>
@@ -84,9 +113,15 @@ function CatSection({ type, label, icon }) {
               <div className="fs-11 fw-700 text-muted" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>⭐ Favourites</div>
               <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                 {favCats.map(c => (
-                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'rgba(251,191,36,.08)', borderRadius: 8, padding: '6px 10px', border: '1px solid rgba(251,191,36,.3)' }}>
+                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'rgba(251,191,36,.08)', borderRadius: 8, padding: '6px 10px', border: `1px solid ${c.isFixed ? 'rgba(249,115,22,.4)' : 'rgba(251,191,36,.3)'}` }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.color || '#aaa', flexShrink: 0 }} />
                     <span className="fs-13 fw-600">{c.name}</span>
+                    {type === 'expense' && (
+                      <button title={c.isFixed ? 'Fixed — click to set Variable' : 'Variable — click to set Fixed'} onClick={() => toggleFixed(c)}
+                        style={{ fontSize: 10, padding: '1px 8px', borderRadius: 20, border: `1px solid ${c.isFixed ? 'var(--orange)' : 'var(--border2)'}`, background: c.isFixed ? 'rgba(249,115,22,.15)' : 'var(--bg4)', color: c.isFixed ? 'var(--orange)' : 'var(--t3)', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                        {c.isFixed ? '📌 Fixed' : '🔀 Var'}
+                      </button>
+                    )}
                     <button className="btn-icon" style={{ fontSize: 11 }} title="Remove favourite" onClick={() => toggleFav(c)}>⭐</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(c); setModal(true); }}>✏️</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(c.id)}>🗑️</button>
@@ -100,9 +135,15 @@ function CatSection({ type, label, icon }) {
               {favCats.length > 0 && <div className="fs-11 fw-700 text-muted" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>All Categories</div>}
               <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                 {otherCats.map(c => (
-                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'var(--bg3)', borderRadius: 8, padding: '6px 10px', border: '1px solid var(--border)' }}>
+                  <div key={c.id} className="flex items-center gap-2" style={{ background: c.isFixed ? 'rgba(249,115,22,.05)' : 'var(--bg3)', borderRadius: 8, padding: '6px 10px', border: `1px solid ${c.isFixed ? 'rgba(249,115,22,.3)' : 'var(--border)'}` }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.color || '#aaa', flexShrink: 0 }} />
                     <span className="fs-13 fw-600">{c.name}</span>
+                    {type === 'expense' && (
+                      <button title={c.isFixed ? 'Fixed — click to set Variable' : 'Variable — click to set Fixed'} onClick={() => toggleFixed(c)}
+                        style={{ fontSize: 10, padding: '1px 8px', borderRadius: 20, border: `1px solid ${c.isFixed ? 'var(--orange)' : 'var(--border2)'}`, background: c.isFixed ? 'rgba(249,115,22,.15)' : 'var(--bg4)', color: c.isFixed ? 'var(--orange)' : 'var(--t3)', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                        {c.isFixed ? '📌 Fixed' : '🔀 Var'}
+                      </button>
+                    )}
                     <button className="btn-icon" style={{ fontSize: 11 }} title="Add to favourites" onClick={() => toggleFav(c)}>☆</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(c); setModal(true); }}>✏️</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(c.id)}>🗑️</button>
@@ -243,7 +284,7 @@ function StockMasterSection() {
                     <tr key={s.id}>
                       <td>
                         <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>
-                          {s.symbol.replace(/^NSE:/i, '')}
+                          {s.symbol}
                         </span>
                       </td>
                       <td className="fw-600 fs-13">{s.name}</td>

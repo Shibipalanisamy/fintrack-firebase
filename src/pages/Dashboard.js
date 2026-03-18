@@ -81,8 +81,10 @@ export default function Dashboard() {
   const [daily, setDaily] = useState([]);
   const [monthly, setMonthly] = useState([]);
   const [catPie, setCatPie] = useState([]);
+  const [catPieVar, setCatPieVar] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [insuranceAlerts, setInsuranceAlerts] = useState([]);
+  const [showDashFixed, setShowDashFixed] = useState(true); // dashboard chart toggle
   const [showInsurancePopup, setShowInsurancePopup] = useState(false);
   const [goals, setGoals] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -125,6 +127,11 @@ export default function Dashboard() {
       const catMap = {};
       expenses.forEach(e => { catMap[e.category] = (catMap[e.category] || 0) + +e.amount; });
       setCatPie(Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([name, value], i) => ({ name, value, color: PALETTE[i] })));
+    // Variable-only pie
+    const FIXED_SET = new Set(['house rent','house rent / advance','rd','rd amount','gold investment']);
+    const varCatMap = {};
+    expenses.filter(e => !FIXED_SET.has((e.category||'').toLowerCase())).forEach(e => { varCatMap[e.category] = (varCatMap[e.category]||0) + +e.amount; });
+    setCatPieVar(Object.entries(varCatMap).sort((a,b)=>b[1]-a[1]).slice(0,7).map(([name,value],i)=>({ name, value, color: PALETTE[i] })));
 
       // Load insurance
       try {
@@ -146,6 +153,10 @@ export default function Dashboard() {
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
+
+  // Fixed category detection for dashboard
+  const DASH_FIXED = new Set(['house rent','house rent / advance','rd','rd amount','gold investment']);
+  const isDashFixed = (name) => DASH_FIXED.has((name||'').toLowerCase());
 
   const hr = now.getHours();
   const greet = hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening';
@@ -250,12 +261,24 @@ export default function Dashboard() {
             <BarChart data={monthly}><XAxis dataKey="n" tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} /><YAxis hide /><Tooltip contentStyle={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 9, fontSize: 12 }} /><Bar dataKey="inc" fill="var(--green)" name="Income" radius={[3,3,0,0]} maxBarSize={14} /><Bar dataKey="exp" fill="var(--red)" name="Expenses" radius={[3,3,0,0]} maxBarSize={14} /><Legend wrapperStyle={{ fontSize: 11 }} /></BarChart>
           </ResponsiveContainer>
         </div>
-        {catPie.length > 0 && (
+        {/* Fixed/Variable toggle for charts */}
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12, flexWrap:'wrap' }}>
+        <span className="fw-700 fs-13">📊 Expense Chart:</span>
+        <button onClick={() => setShowDashFixed(true)}
+          style={{ padding:'4px 12px', borderRadius:20, border:`2px solid ${showDashFixed ? 'var(--blue)' : 'var(--border2)'}`, background: showDashFixed ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: showDashFixed ? 'var(--blue)' : 'var(--t3)', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+          All
+        </button>
+        <button onClick={() => setShowDashFixed(false)}
+          style={{ padding:'4px 12px', borderRadius:20, border:`2px solid ${!showDashFixed ? 'var(--orange)' : 'var(--border2)'}`, background: !showDashFixed ? 'rgba(249,115,22,.15)' : 'var(--bg3)', color: !showDashFixed ? 'var(--orange)' : 'var(--t3)', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+          🔀 Variable Only
+        </button>
+      </div>
+      {catPie.length > 0 && (
           <div className="card">
             <div className="card-title">🗂️ Expense Categories</div>
             <div className="flex" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <ResponsiveContainer width={150} height={150}><PieChart><Pie data={catPie} cx="50%" cy="50%" innerRadius={42} outerRadius={70} dataKey="value" paddingAngle={2}>{catPie.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><Tooltip formatter={v => fmt(v)} /></PieChart></ResponsiveContainer>
-              <div style={{ flex: 1, minWidth: 110 }}>{catPie.slice(0, 6).map((d, i) => (<div key={i} className="flex justify-between items-center mb-2"><div className="flex items-center gap-2 fs-12"><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, flexShrink: 0 }} /><span className="text-muted">{d.name}</span></div><span className="font-mono fs-12 fw-bold">{fmt(d.value)}</span></div>))}</div>
+              <div style={{ flex: 1, minWidth: 110 }}>{(showDashFixed ? catPie : catPieVar).slice(0, 6).map((d, i) => (<div key={i} className="flex justify-between items-center mb-2"><div className="flex items-center gap-2 fs-12"><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, flexShrink: 0 }} /><span className="text-muted">{d.name}</span></div><span className="font-mono fs-12 fw-bold">{fmt(d.value)}</span></div>))}</div>
             </div>
           </div>
         )}

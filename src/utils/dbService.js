@@ -2,6 +2,14 @@ import { db, auth } from './firebase';
 import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 
 const uid = () => auth.currentUser?.uid;
+
+// ─── Session Cache (cleared on page refresh) ──────────────
+const _cache = {};
+const _cacheGet = (key) => _cache[key];
+const _cacheSet = (key, val) => { _cache[key] = val; return val; };
+const _cacheClear = (key) => { delete _cache[key]; };
+
+
 const toDate = (d) => d?.toDate?.() || new Date(d);
 
 // ─── INCOME ───────────────────────────────────────────────
@@ -178,9 +186,13 @@ const DEFAULT_STOCKS = [
 
 export const stockMasterService = {
   async getAll() {
+    const cacheKey = `stockmaster_${uid()}`;
+    const cached = _cacheGet(cacheKey);
+    if (cached) return cached;
     const q = query(collection(db, 'stockmaster'), where('userId', '==', uid()));
     const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.symbol.localeCompare(b.symbol));
+    const result = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.symbol.localeCompare(b.symbol));
+    return _cacheSet(cacheKey, result);
   },
   async seedDefaults(userId) {
     const snap = await getDocs(query(collection(db, 'stockmaster'), where('userId', '==', userId)));
@@ -190,9 +202,9 @@ export const stockMasterService = {
       }
     }
   },
-  async create(data) { return addDoc(collection(db, 'stockmaster'), { ...data, userId: uid() }); },
-  async update(id, data) { return updateDoc(doc(db, 'stockmaster', id), data); },
-  async delete(id) { return deleteDoc(doc(db, 'stockmaster', id)); }
+  async create(data) { _cacheClear(`stockmaster_${uid()}`); return addDoc(collection(db, 'stockmaster'), { ...data, userId: uid() }); },
+  async update(id, data) { _cacheClear(`stockmaster_${uid()}`); return updateDoc(doc(db, 'stockmaster', id), data); },
+  async delete(id) { _cacheClear(`stockmaster_${uid()}`); return deleteDoc(doc(db, 'stockmaster', id)); }
 };
 
 // ─── LOAN PAYMENTS ────────────────────────────────────────
@@ -273,9 +285,7 @@ export const brokerService = {
       for (const b of DEFAULT_BROKERS) await addDoc(collection(db, 'brokers'), { ...b, userId, isDefault: true });
     }
   },
-  async create(data) { return addDoc(collection(db, 'brokers'), { ...data, userId: uid() }); },
-  async update(id, data) { return updateDoc(doc(db, 'brokers', id), data); },
-  async delete(id) { return deleteDoc(doc(db, 'brokers', id)); }
+  async create(data) { _cacheClear(`brokers_${uid()}`); return addDoc(collection(db, 'brokers'), { ...data, userId: uid() }); },
+  async update(id, data) { _cacheClear(`brokers_${uid()}`); return updateDoc(doc(db, 'brokers', id), data); },
+  async delete(id) { _cacheClear(`brokers_${uid()}`); return deleteDoc(doc(db, 'brokers', id)); }
 };
-
-

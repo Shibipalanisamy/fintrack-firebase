@@ -1120,13 +1120,22 @@ export default function PortfolioPage() {
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState('');
 
-  const load = async () => {
+  const load = async (invalidateCache = false) => {
     setLoading(true);
     try {
-      const [inv, sm, br] = await Promise.all([investmentService.getAll(), stockMasterService.getAll(), brokerService.getAll()]);
-      setItems(inv); setStocks(sm); setBrokers(br);
-    } catch { toast.error('Failed to load'); }
-    finally { setLoading(false); }
+      // Fetch investments first — show the page immediately
+      const inv = await investmentService.getAll();
+      setItems(inv);
+      setLoading(false); // unblock UI as soon as investments arrive
+
+      // Fetch stocks & brokers in background (cached after first load)
+      const [sm, br] = await Promise.all([
+        stockMasterService.getAll(),
+        brokerService.getAll(),
+      ]);
+      setStocks(sm);
+      setBrokers(br);
+    } catch { toast.error('Failed to load'); setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
@@ -1190,15 +1199,23 @@ export default function PortfolioPage() {
         }
       }
       toast.success(`Saved ${saved} prices to database`);
-      load();
+      reloadItems();
     } catch { toast.error('Save failed'); }
+  };
+
+  // Lightweight reload — only re-fetches investments (stocks/brokers stay cached)
+  const reloadItems = async () => {
+    try {
+      const inv = await investmentService.getAll();
+      setItems(inv);
+    } catch { toast.error('Failed to refresh'); }
   };
 
   const save = async data => {
     try {
       if (edit) { await investmentService.update(edit.id, data); toast.success('Updated!'); }
       else { await investmentService.create(data); toast.success('Stock added!'); }
-      setModal(false); setEdit(null); load();
+      setModal(false); setEdit(null); reloadItems();
     } catch { toast.error('Failed'); }
   };
 
@@ -1206,10 +1223,10 @@ export default function PortfolioPage() {
     try {
       await investmentService.create(data);
       toast.success('Stock added! Form ready for next entry.');
-      load(); // refresh data in background — modal stays open
+      reloadItems(); // refresh investments only — modal stays open
     } catch { toast.error('Failed'); }
   };
-  const del = async () => { try { await investmentService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
+  const del = async () => { try { await investmentService.delete(delId); toast.success('Deleted'); setDelId(null); reloadItems(); } catch { toast.error('Failed'); } };
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
@@ -1231,7 +1248,7 @@ export default function PortfolioPage() {
         imported++;
         setImportProgress({ current: imported, total: validRows.length });
       }
-      toast.success(`Imported ${imported} stocks!`); load();
+      toast.success(`Imported ${imported} stocks!`); reloadItems();
     } catch { toast.error('Import failed.'); }
     finally { setImporting(false); setImportProgress({ current: 0, total: 0 }); }
     e.target.value = '';
@@ -1289,7 +1306,7 @@ export default function PortfolioPage() {
             <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
           </label>
           <button className="btn btn-secondary btn-sm" onClick={() => exportCSV(items.map(i => ({ stockName: i.stockName, symbol: i.symbol, quantity: i.quantity, purchasePrice: i.purchasePrice, currentPrice: i.currentPrice || i.purchasePrice, brokerName: i.brokerName || '', brokerage: i.brokerage || 0, totalInvested: i.totalInvested, currentValue: i.currentValue, profitLoss: i.profitLoss, allocation: i.allocation + '%' })), 'portfolio.csv')}>⬇️ Export</button>
-          <button className="btn btn-primary btn-sm" onClick={async () => { setEdit(null); setModal(true); try { setBrokers(await brokerService.getAll()); } catch {} }}>+ Add Stock</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add Stock</button>
         </div>
       </div>
 
@@ -1367,14 +1384,14 @@ export default function PortfolioPage() {
           brokers={brokers}
           getBrokerColor={getBrokerColor}
           getBrokerIcon={getBrokerIcon}
-          onEdit={i => { setEdit(i); setModal(true); brokerService.getAll().then(setBrokers).catch(() => {}); }}
+          onEdit={i => { setEdit(i); setModal(true); }}
           onDelete={id => setDelId(id)}
           onBulkDelete={async (ids) => {
             for (const id of ids) await investmentService.delete(id);
-            toast.success(`Deleted ${ids.length} records`); load();
+            toast.success(`Deleted ${ids.length} records`); reloadItems();
           }}
           onPriceUpdate={async (item, price) => {
-            try { await investmentService.update(item.id, { ...item, currentPrice: price }); toast.success('Updated!'); load(); } catch { toast.error('Failed'); }
+            try { await investmentService.update(item.id, { ...item, currentPrice: price }); toast.success('Updated!'); reloadItems(); } catch { toast.error('Failed'); }
           }}
         />
       )}

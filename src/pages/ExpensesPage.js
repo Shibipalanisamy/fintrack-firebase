@@ -125,7 +125,7 @@ function AmountInput({ value, onChange }) {
 
 // ─── Expense Form ──────────────────────────────────────────
 function ExpForm({ item, cats, onSave, onClose }) {
-  const PAID_VIA = ['HDFC Bank','Axis Bank','IDFC First Bank','Paytm','ICICI','ICICI Credit Card','Cash Wallet','UTS Wallet','Amazon Wallet'];
+  const PAID_VIA = ['HDFC Bank','Axis Bank','IDFC First Bank','Paytm','ICICI','ICICI Credit Card','Cash Wallet','Meal Card','Cash','UTS Wallet','Amazon Wallet'];
   const [f, setF] = useState({ date: today(), category: cats.find(c => c.isFavorite)?.name || cats[0]?.name || 'Grocery', itemName: '', paidVia: 'HDFC Bank', amount: '', notes: '', ...(item ? { ...item, date: fmtDateInput(item.date) } : {}) });
   const [loading, setLoading] = useState(false);
   const ch = e => setF(p => ({ ...p, [e.target.name]: e.target.value }));
@@ -154,31 +154,69 @@ function ExpForm({ item, cats, onSave, onClose }) {
 }
 
 // ─── Percentage Tab ────────────────────────────────────────
-function PercentageTab({ items }) {
+function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
   const total = items.reduce((s, i) => s + +i.amount, 0);
   const catMap = {};
   items.forEach(i => { catMap[i.category] = (catMap[i.category] || 0) + +i.amount; });
   const sorted = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
   const pieData = sorted.slice(0, 10).map(([name, value], idx) => ({ name, value, color: PALETTE[idx % PALETTE.length] }));
 
-  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📊</div><div className="empty-title">No data</div><div className="empty-sub">Add expenses to see percentage breakdown</div></div></div>;
+  const varItems  = allItems ? allItems.filter(i => !isFixedCat(i.category)) : items;
+  const fixItems  = allItems ? allItems.filter(i => isFixedCat(i.category)) : [];
+  const varTotal  = varItems.reduce((s,i) => s + +i.amount, 0);
+  const fixTotal  = fixItems.reduce((s,i) => s + +i.amount, 0);
+  const grandTotal = (allItems || items).reduce((s,i) => s + +i.amount, 0);
+
+  const buildPie = (list) => {
+    const m = {}; list.forEach(i => { m[i.category] = (m[i.category]||0) + +i.amount; });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([name,value],idx)=>({ name, value, color: PALETTE[idx%PALETTE.length] }));
+  };
+  const varPie = buildPie(varItems);
+  const fixPie = buildPie(fixItems);
+
+  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📊</div><div className="empty-title">No data</div><div className="empty-sub">{showFixed ? 'Add expenses to see breakdown' : 'No variable expenses found'}</div></div></div>;
+
+  const PieCard = ({ title, data, chartTotal, color }) => (
+    <div className="card" style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      <div className="card-title">{title}</div>
+      <div style={{ display:'flex', alignItems:'center', gap:16, flexWrap:'wrap' }}>
+        <ResponsiveContainer width={150} height={150}>
+          <PieChart><Pie data={data} cx="50%" cy="50%" innerRadius={40} outerRadius={70} dataKey="value" paddingAngle={2}>{data.map((e,i)=><Cell key={i} fill={e.color}/>)}</Pie><Tooltip formatter={(v)=>[`Rs ${fmt(v)}`,'']} /></PieChart>
+        </ResponsiveContainer>
+        <div style={{ flex:1 }}>
+          {data.map((d,i)=>(
+            <div key={i} className="flex justify-between items-center mb-2">
+              <div className="flex items-center gap-2 fs-12"><span style={{ width:8,height:8,borderRadius:'50%',background:d.color,flexShrink:0 }}/><span className="text-muted">{d.name}</span></div>
+              <span className="fw-700 fs-12" style={{ color:d.color }}>{chartTotal > 0 ? ((d.value/chartTotal)*100).toFixed(1) : 0}%</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginBottom: 16 }}>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <ResponsiveContainer width={160} height={160}>
-            <PieChart><Pie data={pieData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} dataKey="value" paddingAngle={2}>{pieData.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><Tooltip formatter={(v) => [`Rs ${fmt(v)}`, '']} /></PieChart>
-          </ResponsiveContainer>
-          <div style={{ flex: 1 }}>
-            {pieData.map((d, i) => (
-              <div key={i} className="flex justify-between items-center mb-2">
-                <div className="flex items-center gap-2 fs-12"><span style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, flexShrink: 0 }} /><span className="text-muted">{d.name}</span></div>
-                <span className="fw-700 fs-12" style={{ color: d.color }}>{((d.value / total) * 100).toFixed(1)}%</span>
-              </div>
-            ))}
+      {/* Split summary cards */}
+      {allItems && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
+          <div style={{ background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.2)', borderRadius:12, padding:14 }}>
+            <div className="fw-700 fs-13 mb-1" style={{ color:'var(--orange)' }}>📌 Fixed Expenses</div>
+            <div className="fw-900 fs-20" style={{ color:'var(--orange)' }}>{fmt(fixTotal)}</div>
+            <div className="fs-11 text-muted mt-1">{grandTotal>0?((fixTotal/grandTotal)*100).toFixed(1):0}% of total spend</div>
+          </div>
+          <div style={{ background:'rgba(77,158,255,.06)', border:'1px solid rgba(77,158,255,.2)', borderRadius:12, padding:14 }}>
+            <div className="fw-700 fs-13 mb-1" style={{ color:'var(--blue)' }}>🔀 Variable Expenses</div>
+            <div className="fw-900 fs-20" style={{ color:'var(--blue)' }}>{fmt(varTotal)}</div>
+            <div className="fs-11 text-muted mt-1">{grandTotal>0?((varTotal/grandTotal)*100).toFixed(1):0}% of total spend</div>
           </div>
         </div>
+      )}
+
+      {/* Dual charts */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))', gap:16, marginBottom:16 }}>
+        {varPie.length > 0 && <PieCard title="🔀 Variable Expenses" data={varPie} chartTotal={varTotal} />}
+        {showFixed && fixPie.length > 0 && <PieCard title="📌 Fixed Expenses" data={fixPie} chartTotal={fixTotal} />}
       </div>
 
       {/* Full table */}
@@ -210,7 +248,7 @@ function PercentageTab({ items }) {
 }
 
 // ─── Group Summary Tab ─────────────────────────────────────
-function GroupSummaryTab({ items }) {
+function GroupSummaryTab({ items, showFixed }) {
   const total = items.reduce((s, i) => s + +i.amount, 0);
 
   const getGroupTotal = (group) => {
@@ -227,10 +265,15 @@ function GroupSummaryTab({ items }) {
   const ungroupedItems = items.filter(i => !EXPENSE_GROUPS.some(g => g.categories.some(c => c.toLowerCase() === i.category?.toLowerCase())));
   const ungroupedTotal = ungroupedItems.reduce((s, i) => s + +i.amount, 0);
 
-  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📋</div><div className="empty-title">No data</div><div className="empty-sub">Add expenses to see group summary</div></div></div>;
+  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📋</div><div className="empty-title">No data</div><div className="empty-sub">{showFixed ? 'Add expenses to see group summary' : 'No variable expenses found'}</div></div></div>;
 
   return (
     <div>
+      {!showFixed && (
+        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:12, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
+          🔀 Variable expenses only — Fixed (House Rent, RD, Gold Investment) excluded
+        </div>
+      )}
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 16 }}>
         {EXPENSE_GROUPS.map(g => {
@@ -341,7 +384,7 @@ function GroupSummaryTab({ items }) {
     </div>
   );
 }
-function DailySpendingTab({ items }) {
+function DailySpendingTab({ items, showFixed }) {
   const [expandedDay, setExpandedDay] = useState(null);
 
   // Exclude recurring-generated expenses entirely from Daily view
@@ -377,12 +420,17 @@ function DailySpendingTab({ items }) {
   };
 
   if (items.length === 0) return (
-    <div className="card"><div className="empty"><div className="empty-icon">📅</div><div className="empty-title">No expenses this month</div></div></div>
+    <div className="card"><div className="empty"><div className="empty-icon">📅</div><div className="empty-title">{showFixed ? 'No expenses this month' : 'No variable expenses this month'}</div></div></div>
   );
 
   return (
     <div>
       {/* Summary row */}
+      {!showFixed && (
+        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:10, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
+          🔀 Variable only — Fixed expenses (House Rent, RD, Gold) excluded from daily view
+        </div>
+      )}
       <div className="stats mb-4">
         {[
           { icon: '📅', label: 'Days with Spending', val: days.length, c: 'var(--blue)' },
@@ -517,7 +565,7 @@ const FREQ_OPTIONS = [
 
 const BLANK_REC = { name: '', category: '', amount: '', frequency: 'monthly', nextDue: today(), paidVia: '', notes: '', isActive: true };
 
-function RecurringTab({ cats }) {
+function RecurringTab({ cats, showFixed, isFixedCat }) {
   const [items, setItems]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal]   = useState(false);
@@ -593,8 +641,9 @@ function RecurringTab({ cats }) {
     return { label: `${days}d left`, color: 'var(--t3)', bg: 'var(--bg3)' };
   };
 
-  const activeItems  = items.filter(i => i.isActive);
+  const activeItems   = items.filter(i => i.isActive);
   const inactiveItems = items.filter(i => !i.isActive);
+  const displayItems  = showFixed ? activeItems : activeItems.filter(i => !isFixedCat || !isFixedCat(i.category));
   const monthlyTotal = activeItems.reduce((s, i) => {
     const freq = FREQ_OPTIONS.find(f => f.key === i.frequency);
     const perMonth = freq ? (parseFloat(i.amount) * 30) / freq.days : parseFloat(i.amount);
@@ -624,9 +673,14 @@ function RecurringTab({ cats }) {
         ))}
       </div>
 
+      {!showFixed && (
+        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:10, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
+          🔀 Variable only — Fixed recurring items hidden. Payments to fixed items still record to the List tab.
+        </div>
+      )}
       {/* Header */}
       <div className="flex justify-between items-center mb-3">
-        <div className="fs-14 fw-700">🔄 Active Recurring ({activeItems.length})</div>
+        <div className="fs-14 fw-700">🔄 Active Recurring ({displayItems.length}{!showFixed ? ' variable' : ''})</div>
         <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm(BLANK_REC); setModal(true); }}>+ Add Recurring</button>
       </div>
 
@@ -639,7 +693,7 @@ function RecurringTab({ cats }) {
           )
           : (
             <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
-              {activeItems.sort((a, b) => getDaysUntil(a.nextDue) - getDaysUntil(b.nextDue)).map(item => {
+              {displayItems.sort((a, b) => getDaysUntil(a.nextDue) - getDaysUntil(b.nextDue)).map(item => {
                 const days = getDaysUntil(item.nextDue);
                 const status = getDueStatus(days);
                 const freq = FREQ_OPTIONS.find(f => f.key === item.frequency);
@@ -749,7 +803,7 @@ const COMPARE_MODES = [
   { key: 'week',label: 'Weekly',   months: 0 },
 ];
 
-function CompareTab() {
+function CompareTab({ showFixed, isFixedCat }) {
   const [mode, setMode] = useState('6m');
   const [data, setData] = useState([]);
   const [catData, setCatData] = useState([]);
@@ -768,7 +822,8 @@ function CompareTab() {
         // Weekly: last 12 weeks
         const allItems = await expenseService.getAll({ year: now.getFullYear() });
         const prevYearItems = await expenseService.getAll({ year: now.getFullYear() - 1 });
-        const combined = [...prevYearItems, ...allItems];
+        const allCombined = [...prevYearItems, ...allItems];
+        const combined = showFixed ? allCombined : allCombined.filter(i => !isFixedCat || !isFixedCat(i.category));
 
         const weeks = [];
         for (let w = 11; w >= 0; w--) {
@@ -801,21 +856,23 @@ function CompareTab() {
         }
         const fetched = await Promise.all(months.map(({ m, y }) => expenseService.getAll({ month: m, year: y })));
         const rows = months.map(({ label }, idx) => {
-          const items = fetched[idx];
+          const rawItems = fetched[idx];
+          const items = showFixed ? rawItems : rawItems.filter(i => !isFixedCat || !isFixedCat(i.category));
           const total = items.reduce((s, i) => s + +i.amount, 0);
           const cats = {};
           items.forEach(i => { cats[i.category] = (cats[i.category] || 0) + +i.amount; });
           return { label, total, ...cats, _items: items };
         });
         setData(rows);
-        const catSet = new Set(fetched.flat().map(i => i.category).filter(Boolean));
+        const allFlat = showFixed ? fetched.flat() : fetched.flat().filter(i => !isFixedCat || !isFixedCat(i.category));
+        const catSet = new Set(allFlat.map(i => i.category).filter(Boolean));
         setAllCats([...catSet].sort());
       }
     } catch (e) { toast.error('Failed to load'); console.error(e); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [mode]);
+  useEffect(() => { load(); }, [mode, showFixed]);
 
   // Top categories by total spend across all periods
   const topCats = allCats
@@ -869,6 +926,11 @@ function CompareTab() {
         </div>
       </div>
 
+      {!showFixed && (
+        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:12, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
+          🔀 Variable only — Fixed (House Rent, RD, Gold) excluded from all comparisons
+        </div>
+      )}
       {loading ? <div className="spin-center"><div className="spin spin-lg" /></div> : (
         <>
           {/* Summary stats */}
@@ -1088,6 +1150,7 @@ export default function ExpensesPage() {
   const [selected, setSelected] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [confirmBulkDel, setConfirmBulkDel] = useState(false);
+  const [showFixed, setShowFixed] = useState(true); // global: true=all, false=variable only
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1149,7 +1212,7 @@ export default function ExpensesPage() {
   };
 
   const [migrating, setMigrating] = useState(false);
-  const [migrateDone, setMigrateDone] = useState(false);
+  const [migrateDone, setMigrateDone] = useState(true); // hidden by default
 
   // One-time migration: copy itemName → notes for all records across ALL months
   const migrateItemToNotes = async () => {
@@ -1179,13 +1242,25 @@ export default function ExpensesPage() {
     finally { setMigrating(false); }
   };
 
-  const sortedItems = [...items].sort((a, b) => {
+  // Fixed category detection
+  const ALWAYS_FIXED = new Set(['house rent','house rent / advance','rd','rd amount','gold investment']);
+  const fixedCatNames = new Set([
+    ...cats.filter(c => c.isFixed).map(c => c.name.toLowerCase()),
+    ...ALWAYS_FIXED
+  ]);
+  const isFixedCat = (name) => fixedCatNames.has((name || '').toLowerCase());
+
+  // Apply global toggle
+  const filteredByToggle = showFixed ? items : items.filter(i => !isFixedCat(i.category));
+
+  const sortedItems = [...filteredByToggle].sort((a, b) => {
     let valA = sortField === 'amount' ? +a.amount : new Date(a.date).getTime();
     let valB = sortField === 'amount' ? +b.amount : new Date(b.date).getTime();
     return sortOrder === 'asc' ? valA - valB : valB - valA;
   });
 
-  const total = items.reduce((s, i) => s + +i.amount, 0);
+  const totalAll = items.reduce((s, i) => s + +i.amount, 0);
+  const total = filteredByToggle.reduce((s, i) => s + +i.amount, 0);
   const favCats = cats.filter(c => c.isFavorite);
   const otherCats = cats.filter(c => !c.isFavorite);
 
@@ -1211,7 +1286,7 @@ export default function ExpensesPage() {
       )}
 
       <div className="page-head">
-        <div><div className="page-title">💸 Expenses</div><div className="page-sub">{items.length} records • Total: <span className="amt amt-r">{fmt(total)}</span></div></div>
+        <div><div className="page-title">💸 Expenses</div><div className="page-sub">{filteredByToggle.length} records • Total: <span className="amt amt-r">{fmt(total)}</span>{!showFixed && <span style={{marginLeft:8,fontSize:11,color:'var(--orange)',fontWeight:700}}>(Variable only)</span>}</div></div>
         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
           <MonthYearFilter month={month} year={year} setMonth={setMonth} setYear={setYear} />
           <label className="btn btn-secondary btn-sm" style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1 }}>
@@ -1253,6 +1328,26 @@ export default function ExpensesPage() {
             {t.label}
           </button>
         ))}
+      </div>
+
+      {/* ─── Global Fixed/Variable Toggle Bar ─── */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, background:'var(--bg2)', border:'1px solid var(--border2)', borderRadius:12, padding:'10px 16px', marginBottom:14, flexWrap:'wrap' }}>
+        <span style={{ fontSize:16 }}>🎛️</span>
+        <span className="fw-700 fs-13">Expense View:</span>
+        <div className="flex gap-2">
+          <button onClick={() => setShowFixed(true)}
+            style={{ padding:'5px 14px', borderRadius:20, border:`2px solid ${showFixed ? 'var(--blue)' : 'var(--border2)'}`, background: showFixed ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: showFixed ? 'var(--blue)' : 'var(--t3)', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+            📊 All Expenses
+          </button>
+          <button onClick={() => setShowFixed(false)}
+            style={{ padding:'5px 14px', borderRadius:20, border:`2px solid ${!showFixed ? 'var(--orange)' : 'var(--border2)'}`, background: !showFixed ? 'rgba(249,115,22,.15)' : 'var(--bg3)', color: !showFixed ? 'var(--orange)' : 'var(--t3)', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+            🔀 Variable Only
+          </button>
+        </div>
+        <div style={{ marginLeft:'auto', display:'flex', gap:12, fontSize:12, flexWrap:'wrap' }}>
+          <span style={{ color:'var(--orange)', fontWeight:700 }}>📌 Fixed: <span style={{ color:'var(--text)' }}>{fmt(items.filter(i => isFixedCat(i.category)).reduce((s,i)=>s+ +i.amount,0))}</span></span>
+          <span style={{ color:'var(--blue)', fontWeight:700 }}>🔀 Variable: <span style={{ color:'var(--text)' }}>{fmt(items.filter(i => !isFixedCat(i.category)).reduce((s,i)=>s+ +i.amount,0))}</span></span>
+        </div>
       </div>
 
       {/* Filters — show only on list tab */}
@@ -1313,7 +1408,7 @@ export default function ExpensesPage() {
                           style={{ width: 15, height: 15, cursor: 'pointer', accentColor: 'var(--blue)' }} />
                       </td>
                       <td style={{ fontSize: 14, fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{fmtDate(i.date)}</td>
-                      <td><span className="badge badge-r" style={{ fontSize: 13, padding: '4px 12px' }}>{i.category}</span></td>
+                      <td><div className="flex items-center gap-1"><span className="badge badge-r" style={{ fontSize: 13, padding: '4px 12px' }}>{i.category}</span>{isFixedCat(i.category) && <span title="Fixed expense" style={{ fontSize: 10, background: 'rgba(249,115,22,.15)', color: 'var(--orange)', borderRadius: 20, padding: '1px 6px', fontWeight: 700 }}>📌</span>}</div></td>
                       <td style={{ textAlign: 'right' }}><span className="amt amt-r" style={{ fontSize: 15, fontWeight: 800 }}>{fmt(i.amount)}</span></td>
                       <td><span style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: 13, fontWeight: 700, color: 'var(--blue)', whiteSpace: 'nowrap' }}>{i.paidVia || '—'}</span></td>
                       <td style={{ fontSize: 14 }}>
@@ -1341,11 +1436,11 @@ export default function ExpensesPage() {
         </>
       )}
 
-      {tab === 'recurring' && <RecurringTab cats={cats} />}
-      {tab === 'daily'     && <DailySpendingTab items={items} />}
-      {tab === 'percent'   && <PercentageTab items={items} />}
-      {tab === 'groups'    && <GroupSummaryTab items={items} />}
-      {tab === 'compare'   && <CompareTab />}
+      {tab === 'recurring' && <RecurringTab cats={cats} showFixed={showFixed} isFixedCat={isFixedCat} />}
+      {tab === 'daily'     && <DailySpendingTab items={filteredByToggle} showFixed={showFixed} />}
+      {tab === 'percent'   && <PercentageTab items={filteredByToggle} showFixed={showFixed} isFixedCat={isFixedCat} allItems={items} />}
+      {tab === 'groups'    && <GroupSummaryTab items={filteredByToggle} showFixed={showFixed} />}
+      {tab === 'compare'   && <CompareTab showFixed={showFixed} isFixedCat={isFixedCat} />}
 
       {modal && <Modal title={edit ? '✏️ Edit Expense' : '➕ Add Expense'} onClose={() => { setModal(false); setEdit(null); }}><ExpForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
