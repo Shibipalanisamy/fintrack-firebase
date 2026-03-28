@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { categoryService, stockMasterService, brokerService } from '../utils/dbService';
-import { Modal, ConfirmDelete } from '../components/UI';
+import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import { PALETTE } from '../utils/helpers';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 
 // ─── Category Form ─────────────────────────────────────────
 function CatForm({ item, type, onSave, onClose }) {
-  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, isFixed: false, ...(item || {}) });
+  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, ...(item || {}) });
   const [loading, setLoading] = useState(false);
   const submit = async e => { e.preventDefault(); setLoading(true); try { await onSave(f); } finally { setLoading(false); } };
   return (
@@ -29,23 +29,6 @@ function CatForm({ item, type, onSave, onClose }) {
           <span className="fs-13 text-muted">{f.isFavorite ? '⭐ Marked as Favourite' : 'Mark as Favourite'}</span>
         </div>
       </div>
-      {type === 'expense' && (
-        <div className="fg">
-          <label className="fl">Expense Type <span className="text-muted fs-11">(affects charts & global filter)</span></label>
-          <div className="flex gap-2 mt-1">
-            {[
-              { key: false, label: '🔀 Variable', desc: 'Day-to-day spending (Groceries, Petrol…)' },
-              { key: true,  label: '📌 Fixed',    desc: 'Same every month (Rent, RD, Gold…)' },
-            ].map(opt => (
-              <button key={String(opt.key)} type="button" onClick={() => setF(p => ({ ...p, isFixed: opt.key }))}
-                style={{ flex:1, padding:'10px 12px', borderRadius:10, border:`2px solid ${f.isFixed === opt.key ? (opt.key ? 'var(--orange)' : 'var(--blue)') : 'var(--border2)'}`, background: f.isFixed === opt.key ? (opt.key ? 'rgba(249,115,22,.1)' : 'rgba(77,158,255,.1)') : 'var(--bg3)', cursor:'pointer', textAlign:'left' }}>
-                <div className="fw-700 fs-13" style={{ color: f.isFixed === opt.key ? (opt.key ? 'var(--orange)' : 'var(--blue)') : 'var(--t2)' }}>{opt.label}</div>
-                <div className="fs-11 text-muted mt-1">{opt.desc}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
       <div className="modal-foot">
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? <span className="spin" /> : null}{item ? 'Update' : 'Add Category'}</button>
@@ -79,11 +62,6 @@ function CatSection({ type, label, icon }) {
     catch { toast.error('Failed'); }
   };
 
-  const toggleFixed = async (cat) => {
-    try { await categoryService.update(cat.id, { ...cat, isFixed: !cat.isFixed }); toast.success(!cat.isFixed ? '📌 Marked as Fixed' : '🔀 Marked as Variable'); load(); }
-    catch { toast.error('Failed'); }
-  };
-
   const filtered = cats.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
   const favCats = filtered.filter(c => c.isFavorite);
   const otherCats = filtered.filter(c => !c.isFavorite);
@@ -91,14 +69,7 @@ function CatSection({ type, label, icon }) {
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-3">
-        <div className="card-title" style={{ marginBottom: 0 }}>
-          {icon} {label} Categories <span className="text-muted fs-12">({cats.length})</span>
-          {type === 'expense' && cats.filter(c=>c.isFixed).length > 0 && (
-            <span style={{ marginLeft:8, fontSize:11, background:'rgba(249,115,22,.12)', color:'var(--orange)', borderRadius:20, padding:'1px 8px', fontWeight:700 }}>
-              📌 {cats.filter(c=>c.isFixed).length} Fixed
-            </span>
-          )}
-        </div>
+        <div className="card-title" style={{ marginBottom: 0 }}>{icon} {label} Categories <span className="text-muted fs-12">({cats.length})</span></div>
         <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add</button>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, padding: '7px 12px', marginBottom: 14 }}>
@@ -113,15 +84,9 @@ function CatSection({ type, label, icon }) {
               <div className="fs-11 fw-700 text-muted" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>⭐ Favourites</div>
               <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                 {favCats.map(c => (
-                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'rgba(251,191,36,.08)', borderRadius: 8, padding: '6px 10px', border: `1px solid ${c.isFixed ? 'rgba(249,115,22,.4)' : 'rgba(251,191,36,.3)'}` }}>
+                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'rgba(251,191,36,.08)', borderRadius: 8, padding: '6px 10px', border: '1px solid rgba(251,191,36,.3)' }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.color || '#aaa', flexShrink: 0 }} />
                     <span className="fs-13 fw-600">{c.name}</span>
-                    {type === 'expense' && (
-                      <button title={c.isFixed ? 'Fixed — click to set Variable' : 'Variable — click to set Fixed'} onClick={() => toggleFixed(c)}
-                        style={{ fontSize: 10, padding: '1px 8px', borderRadius: 20, border: `1px solid ${c.isFixed ? 'var(--orange)' : 'var(--border2)'}`, background: c.isFixed ? 'rgba(249,115,22,.15)' : 'var(--bg4)', color: c.isFixed ? 'var(--orange)' : 'var(--t3)', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                        {c.isFixed ? '📌 Fixed' : '🔀 Var'}
-                      </button>
-                    )}
                     <button className="btn-icon" style={{ fontSize: 11 }} title="Remove favourite" onClick={() => toggleFav(c)}>⭐</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(c); setModal(true); }}>✏️</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(c.id)}>🗑️</button>
@@ -135,15 +100,9 @@ function CatSection({ type, label, icon }) {
               {favCats.length > 0 && <div className="fs-11 fw-700 text-muted" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>All Categories</div>}
               <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
                 {otherCats.map(c => (
-                  <div key={c.id} className="flex items-center gap-2" style={{ background: c.isFixed ? 'rgba(249,115,22,.05)' : 'var(--bg3)', borderRadius: 8, padding: '6px 10px', border: `1px solid ${c.isFixed ? 'rgba(249,115,22,.3)' : 'var(--border)'}` }}>
+                  <div key={c.id} className="flex items-center gap-2" style={{ background: 'var(--bg3)', borderRadius: 8, padding: '6px 10px', border: '1px solid var(--border)' }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.color || '#aaa', flexShrink: 0 }} />
                     <span className="fs-13 fw-600">{c.name}</span>
-                    {type === 'expense' && (
-                      <button title={c.isFixed ? 'Fixed — click to set Variable' : 'Variable — click to set Fixed'} onClick={() => toggleFixed(c)}
-                        style={{ fontSize: 10, padding: '1px 8px', borderRadius: 20, border: `1px solid ${c.isFixed ? 'var(--orange)' : 'var(--border2)'}`, background: c.isFixed ? 'rgba(249,115,22,.15)' : 'var(--bg4)', color: c.isFixed ? 'var(--orange)' : 'var(--t3)', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                        {c.isFixed ? '📌 Fixed' : '🔀 Var'}
-                      </button>
-                    )}
                     <button className="btn-icon" style={{ fontSize: 11 }} title="Add to favourites" onClick={() => toggleFav(c)}>☆</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(c); setModal(true); }}>✏️</button>
                     <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(c.id)}>🗑️</button>
@@ -552,7 +511,7 @@ function DemergerSection() {
             </div>
             <div className="fg" style={{ marginBottom: 0 }}>
               <label className="fl">📅 Demerger Effective Date</label>
-              <input className="fi" type="date" value={demergerDate} onChange={e => setDemergerDate(e.target.value)} />
+              <DateStepper name="demergerDate" value={demergerDate} onChange={e => setDemergerDate(e.target.value)} />
             </div>
           </div>
 
@@ -656,12 +615,293 @@ function DemergerSection() {
   );
 }
 
+// ─── Data Fix Tools ────────────────────────────────────────
+function DataFixSection() {
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState([]);
+
+  const runFix = async (label, fn) => {
+    setRunning(true);
+    try {
+      const count = await fn();
+      setResults(p => [{ label, count, time: new Date().toLocaleTimeString('en-IN'), ok: true }, ...p]);
+      toast.success(`${label}: ${count} records fixed!`);
+    } catch (e) {
+      setResults(p => [{ label, error: e.message, time: new Date().toLocaleTimeString('en-IN'), ok: false }, ...p]);
+      toast.error('Failed: ' + e.message);
+    } finally { setRunning(false); }
+  };
+
+  const fixCategorySpelling = async (oldVal, newVal, collection_name) => {
+    const { db } = await import('../utils/firebase');
+    const { collection, query, where, getDocs, updateDoc, doc } = await import('firebase/firestore');
+    const { getAuth } = await import('firebase/auth');
+    const uid = getAuth().currentUser?.uid;
+    if (!uid) throw new Error('Not logged in');
+    const q = query(collection(db, collection_name), where('userId', '==', uid), where('category', '==', oldVal));
+    const snap = await getDocs(q);
+    for (const d of snap.docs) await updateDoc(doc(db, collection_name, d.id), { category: newVal });
+    return snap.size;
+  };
+
+  const FIXES = [
+    {
+      label: '"Vegetable" → "Vegetables" (expenses)',
+      desc: 'Renames old "Vegetable" category to "Vegetables" in all expense records',
+      fn: () => fixCategorySpelling('Vegetable', 'Vegetables', 'expenses'),
+    },
+    {
+      label: '"Vegetables for Office" → "Vegetables" (expenses)',
+      desc: 'Merges office vegetable entries into the main Vegetables category',
+      fn: () => fixCategorySpelling('Vegetables for Office', 'Vegetables', 'expenses'),
+    },
+  ];
+
+  return (
+    <div className="card mb-4">
+      <div className="card-title">🔧 Data Fix Tools</div>
+      <div className="text-muted fs-12 mb-3">One-click tools to fix category spelling or rename records in bulk</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {FIXES.map((fix, i) => (
+          <div key={i} style={{ background: 'var(--bg3)', borderRadius: 10, padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div className="fw-700 fs-13">{fix.label}</div>
+              <div className="text-muted fs-12">{fix.desc}</div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => runFix(fix.label, fix.fn)} disabled={running}>
+              {running ? <span className="spin" /> : '▶ Run Fix'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {results.length > 0 && (
+        <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+          <div className="fs-12 fw-700 text-muted mb-2">📋 Fix Log</div>
+          {results.map((r, i) => (
+            <div key={i} className="flex justify-between fs-12 mb-1">
+              <span>{r.ok ? '✅' : '❌'} {r.label}</span>
+              <span className="text-muted">{r.ok ? `${r.count} records · ${r.time}` : r.error}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Backup & Restore ──────────────────────────────────────
+function BackupSection() {
+  const { user } = useAuth();
+  const [backing, setBacking] = useState(false);
+  const [backupProgress, setBackupProgress] = useState({ current: 0, total: 0, col: '' });
+  const [restoring, setRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState({ current: 0, total: 0, col: '' });
+  const [previewData, setPreviewData] = useState(null);
+  const [lastBackup, setLastBackup] = useState(() => localStorage.getItem('fintrack_last_backup') || null);
+
+  const COLLECTIONS = [
+    { key: 'income',          label: 'Income',         icon: '💵' },
+    { key: 'expenses',        label: 'Expenses',       icon: '💸' },
+    { key: 'investments',     label: 'Portfolio',      icon: '📈' },
+    { key: 'dividends',       label: 'Dividends',      icon: '💸' },
+    { key: 'loans',           label: 'Loans',          icon: '🧮' },
+    { key: 'goldinvestments', label: 'Gold',           icon: '🥇' },
+    { key: 'insurance',       label: 'Insurance',      icon: '🛡️' },
+    { key: 'recurring',       label: 'Recurring',      icon: '🔄' },
+    { key: 'goals',           label: 'Goals',          icon: '🎯' },
+    { key: 'brokers',         label: 'Brokers',        icon: '🏦' },
+    { key: 'categories',      label: 'Categories',     icon: '📂' },
+    { key: 'stockmaster',     label: 'Stock Master',   icon: '📋' },
+  ];
+
+  const backup = async () => {
+    setBacking(true);
+    setBackupProgress({ current: 0, total: COLLECTIONS.length, col: '' });
+    try {
+      const { db } = await import('../utils/firebase');
+      const { collection, query, where, getDocs, collection: col2, query: q2 } = await import('firebase/firestore');
+      const uid = user?.uid;
+      if (!uid) { toast.error('Not logged in'); return; }
+      const data = { version: 3, exportedAt: new Date().toISOString(), userId: uid, collections: {} };
+      for (let i = 0; i < COLLECTIONS.length; i++) {
+        const { key, label } = COLLECTIONS[i];
+        setBackupProgress({ current: i + 1, total: COLLECTIONS.length, col: label });
+        try {
+          const snap = await getDocs(query(collection(db, key), where('userId', '==', uid)));
+          data.collections[key] = snap.docs.map(d => {
+            const raw = d.data(); const clean = { id: d.id };
+            Object.entries(raw).forEach(([k, v]) => { clean[k] = v?.toDate ? v.toDate().toISOString() : v; });
+            return clean;
+          });
+        } catch { data.collections[key] = []; }
+      }
+      // Loan payments
+      try {
+        const lSnap = await getDocs(query(collection(db, 'loans'), where('userId', '==', uid)));
+        const payments = [];
+        for (const l of lSnap.docs) {
+          const pSnap = await getDocs(query(collection(db, 'loanpayments'), where('loanId', '==', l.id)));
+          pSnap.docs.forEach(d => { const raw = d.data(); const clean = { id: d.id }; Object.entries(raw).forEach(([k,v]) => { clean[k] = v?.toDate ? v.toDate().toISOString() : v; }); payments.push(clean); });
+        }
+        data.collections['loanpayments'] = payments;
+      } catch { data.collections['loanpayments'] = []; }
+
+      const total = Object.values(data.collections).reduce((s, a) => s + (a?.length || 0), 0);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `fintrack-backup-${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      const now = new Date().toLocaleString('en-IN');
+      localStorage.setItem('fintrack_last_backup', now); setLastBackup(now);
+      toast.success(`Backup downloaded! ${total} records`);
+    } catch (e) { toast.error('Backup failed: ' + e.message); }
+    finally { setBacking(false); setBackupProgress({ current: 0, total: 0, col: '' }); }
+  };
+
+  const loadFile = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.collections) { toast.error('Invalid backup file'); return; }
+      const summary = Object.entries(data.collections)
+        .map(([col, records]) => ({ col, count: records?.length || 0, icon: COLLECTIONS.find(c => c.key === col)?.icon || '📄', label: COLLECTIONS.find(c => c.key === col)?.label || col }))
+        .filter(s => s.count > 0);
+      const total = summary.reduce((s, r) => s + r.count, 0);
+      setPreviewData({ data, summary, total, fileName: file.name, exportedAt: data.exportedAt, sameUser: data.userId === user?.uid });
+    } catch (e) { toast.error('Could not read file: ' + e.message); }
+    e.target.value = '';
+  };
+
+  const confirmRestore = async () => {
+    if (!previewData) return;
+    setRestoring(true);
+    const { data } = previewData;
+    try {
+      const { db } = await import('../utils/firebase');
+      const { collection, addDoc, Timestamp } = await import('firebase/firestore');
+      const uid = user?.uid;
+      const DATE_FIELDS = ['date','purchaseDate','startDate','dueDate','maturityDate','createdAt','nextDue','investedDate'];
+      let restored = 0, failed = 0;
+      const allEntries = Object.entries(data.collections).filter(([,records]) => records?.length > 0);
+      const totalRecords = allEntries.reduce((s,[,r]) => s + r.length, 0);
+      for (const [col, records] of allEntries) {
+        const label = COLLECTIONS.find(c => c.key === col)?.label || col;
+        for (let i = 0; i < records.length; i++) {
+          setRestoreProgress({ current: restored + failed + 1, total: totalRecords, col: label });
+          try {
+            const { id, userId: _uid, ...fields } = records[i];
+            const clean = { ...fields, userId: uid };
+            DATE_FIELDS.forEach(k => { if (clean[k] && typeof clean[k] === 'string' && (clean[k].includes('T') || /^\d{4}-\d{2}-\d{2}$/.test(clean[k]))) { try { clean[k] = Timestamp.fromDate(new Date(clean[k])); } catch {} } });
+            await addDoc(collection(db, col), clean);
+            restored++;
+          } catch (err) { console.warn('Row failed:', err); failed++; }
+        }
+      }
+      toast.success(`Restored ${restored} records!${failed > 0 ? ` (${failed} failed)` : ''} Refresh to see data.`);
+      setPreviewData(null);
+    } catch (e) { toast.error('Restore failed: ' + e.message); }
+    finally { setRestoring(false); setRestoreProgress({ current: 0, total: 0, col: '' }); }
+  };
+
+  const backupPct = backupProgress.total > 0 ? Math.round((backupProgress.current / backupProgress.total) * 100) : 0;
+  const restorePct = restoreProgress.total > 0 ? Math.round((restoreProgress.current / restoreProgress.total) * 100) : 0;
+
+  return (
+    <div className="card mb-4">
+      <div className="card-title">💾 Backup & Restore</div>
+      <div className="text-muted fs-12 mb-4">Export all your FinTrack data as a single JSON file. Import it back anytime to restore.</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px,1fr))', gap: 14, marginBottom: 16 }}>
+        {/* Export */}
+        <div style={{ background: 'rgba(34,197,94,.06)', border: '1px solid rgba(34,197,94,.2)', borderRadius: 14, padding: 20 }}>
+          <div style={{ fontSize: 40, marginBottom: 10 }}>📦</div>
+          <div className="fw-800 fs-15 mb-1">Export Backup</div>
+          <div className="text-muted fs-12 mb-3">Downloads all your data as a JSON file to your device.</div>
+          {lastBackup && <div style={{ background: 'rgba(34,197,94,.08)', borderRadius: 8, padding: '6px 10px', marginBottom: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>✅ Last backup: {lastBackup}</div>}
+          {backing && backupProgress.total > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="flex justify-between fs-12 mb-1"><span className="fw-600" style={{ color: 'var(--green)' }}>Exporting {backupProgress.col}...</span><span className="text-muted">{backupProgress.current}/{backupProgress.total}</span></div>
+              <div style={{ background: 'var(--bg3)', borderRadius: 6, height: 8, overflow: 'hidden' }}><div style={{ height: '100%', width: `${backupPct}%`, background: 'var(--green)', borderRadius: 6, transition: 'width .3s' }} /></div>
+            </div>
+          )}
+          <button className="btn btn-primary" onClick={backup} disabled={backing} style={{ background: 'var(--green)', borderColor: 'var(--green)', width: '100%', justifyContent: 'center' }}>
+            {backing ? <><span className="spin" /> Exporting {backupPct}%...</> : '⬇️ Download Backup'}
+          </button>
+          <div className="fs-11 text-muted mt-2" style={{ textAlign: 'center' }}>Income · Expenses · Portfolio · Loans · Insurance · Goals</div>
+        </div>
+        {/* Restore */}
+        <div style={{ background: 'rgba(77,158,255,.06)', border: '1px solid rgba(77,158,255,.2)', borderRadius: 14, padding: 20 }}>
+          <div style={{ fontSize: 40, marginBottom: 10 }}>♻️</div>
+          <div className="fw-800 fs-15 mb-1">Restore from Backup</div>
+          <div className="text-muted fs-12 mb-2">Select a FinTrack JSON backup file to preview and restore.</div>
+          <div style={{ background: 'rgba(244,63,94,.07)', border: '1px solid rgba(244,63,94,.18)', borderRadius: 8, padding: '7px 10px', marginBottom: 14, fontSize: 11 }}>⚠️ Restore <strong>adds</strong> records — does not delete existing data.</div>
+          {restoring && restoreProgress.total > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="flex justify-between fs-12 mb-1"><span className="fw-600" style={{ color: 'var(--blue)' }}>Restoring {restoreProgress.col}...</span><span className="text-muted">{restoreProgress.current}/{restoreProgress.total}</span></div>
+              <div style={{ background: 'var(--bg3)', borderRadius: 6, height: 8, overflow: 'hidden' }}><div style={{ height: '100%', width: `${restorePct}%`, background: 'var(--blue)', borderRadius: 6, transition: 'width .3s' }} /></div>
+            </div>
+          )}
+          <label className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', cursor: restoring ? 'not-allowed' : 'pointer', opacity: restoring ? 0.6 : 1 }}>
+            {restoring ? <><span className="spin" /> Restoring {restorePct}%...</> : '📂 Select Backup File'}
+            <input type="file" accept=".json" style={{ display: 'none' }} onChange={loadFile} disabled={restoring} />
+          </label>
+          <div className="fs-11 text-muted mt-2" style={{ textAlign: 'center' }}>Only .json files exported from FinTrack</div>
+        </div>
+      </div>
+
+      {/* Preview before restore */}
+      {previewData && (
+        <div style={{ background: 'var(--bg3)', border: '2px solid var(--blue)', borderRadius: 14, padding: 20, marginBottom: 16 }}>
+          <div className="fw-800 fs-15 mb-2">📋 Restore Preview</div>
+          <div className="flex items-center gap-3 mb-3" style={{ flexWrap: 'wrap' }}>
+            <div className="fs-12 text-muted">File: <span className="fw-700">{previewData.fileName}</span></div>
+            {previewData.exportedAt && <div className="fs-12 text-muted">Exported: <span className="fw-700">{new Date(previewData.exportedAt).toLocaleString('en-IN')}</span></div>}
+            {previewData.sameUser
+              ? <span style={{ background: 'rgba(34,197,94,.15)', color: 'var(--green)', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20 }}>✅ Same account</span>
+              : <span style={{ background: 'rgba(244,63,94,.15)', color: 'var(--red)', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20 }}>⚠️ Different account</span>}
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+            {previewData.summary.map(s => (
+              <div key={s.col} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '8px 12px', textAlign: 'center', minWidth: 80 }}>
+                <div style={{ fontSize: 20 }}>{s.icon}</div>
+                <div className="fw-700 fs-13 mt-1">{s.count}</div>
+                <div className="fs-11 text-muted">{s.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: 'rgba(77,158,255,.08)', borderRadius: 8, padding: '8px 14px', marginBottom: 14, fontSize: 13 }}>
+            <span className="fw-700" style={{ color: 'var(--blue)' }}>{previewData.total} records</span> will be added to your account
+          </div>
+          <div className="flex gap-3">
+            <button className="btn btn-primary" onClick={confirmRestore} disabled={restoring} style={{ flex: 1, justifyContent: 'center' }}>
+              {restoring ? <><span className="spin" /> Restoring...</> : `✅ Confirm Restore (${previewData.total} records)`}
+            </button>
+            <button className="btn btn-secondary" onClick={() => setPreviewData(null)} disabled={restoring}>✕ Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '12px 16px' }}>
+        <div className="fw-700 fs-13 mb-2">📋 What's included</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {[...COLLECTIONS, { key: 'loanpayments', label: 'Loan Payments', icon: '💳' }].map(({ key, icon, label }) => (
+            <span key={key} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 20, padding: '4px 10px', fontSize: 12 }}>{icon} {label}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Settings Page ─────────────────────────────────────────
 export default function SettingsPage() {
   return (
     <div>
       <div className="page-head"><div className="page-title">⚙️ Settings</div></div>
+      <BackupSection />
       <DemergerSection />
+      <DataFixSection />
       <BrokerSection />
       <StockMasterSection />
       <CatSection type="income" label="Income" icon="💵" />

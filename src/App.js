@@ -14,6 +14,8 @@ import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import InsurancePage from './pages/InsurancePage';
 import GoalsPage from './pages/GoalsPage';
+import CardsPage from './pages/CardsPage';
+import BankingPage from './pages/BankingPage'
 import './App.css';
 
 function Protected({ children }) {
@@ -44,6 +46,8 @@ function App() {
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/insurance" element={<InsurancePage />} />
                     <Route path="/goals" element={<GoalsPage />} />
+                    <Route path="/cards" element={<CardsPage />} />
+                    <Route path="/banking" element={<BankingPage />} />
                   </Routes>
                 </Layout>
               </Protected>

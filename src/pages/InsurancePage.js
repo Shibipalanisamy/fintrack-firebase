@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { db, auth } from '../utils/firebase';
 import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, getDocs, Timestamp } from 'firebase/firestore';
 import { fmt, fmtDate, fmtDateInput, today } from '../utils/helpers';
-import { Modal, ConfirmDelete } from '../components/UI';
+import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import toast from 'react-hot-toast';
 import { differenceInDays, addDays, format } from 'date-fns';
 
@@ -94,8 +94,8 @@ function InsuranceForm({ item, onSave, onClose }) {
         <div className="fg"><label className="fl">Policy Number</label><input className="fi" type="text" name="policyNumber" value={f.policyNumber} onChange={ch} placeholder="Optional" /></div>
       </div>
       <div className="frow">
-        <div className="fg"><label className="fl">Start Date</label><input className="fi" type="date" name="startDate" value={f.startDate} onChange={ch} required /></div>
-        <div className="fg"><label className="fl">Next Due Date</label><input className="fi" type="date" name="dueDate" value={f.dueDate} onChange={ch} required /></div>
+        <div className="fg"><label className="fl">Start Date</label><DateStepper name="startDate" value={f.startDate} onChange={ch} required /></div>
+        <div className="fg"><label className="fl">Next Due Date</label><DateStepper name="dueDate" value={f.dueDate} onChange={ch} required /></div>
       </div>
       <div className="frow">
         <div className="fg"><label className="fl">Premium Amount (₹)</label><input className="fi" type="number" name="premiumAmount" value={f.premiumAmount} onChange={ch} placeholder="0" min="0" /></div>
@@ -103,7 +103,7 @@ function InsuranceForm({ item, onSave, onClose }) {
       </div>
       <div className="frow">
         <div className="fg"><label className="fl">Due Amount (₹)</label><input className="fi" type="number" name="dueAmount" value={f.dueAmount} onChange={ch} placeholder="0" min="0" /></div>
-        <div className="fg"><label className="fl">Maturity Date</label><input className="fi" type="date" name="maturityDate" value={f.maturityDate} onChange={ch} /></div>
+        <div className="fg"><label className="fl">Maturity Date</label><DateStepper name="maturityDate" value={f.maturityDate} onChange={ch} /></div>
       </div>
       <div className="fg"><label className="fl">Maturity Amount (₹)</label><input className="fi" type="number" name="maturityAmount" value={f.maturityAmount} onChange={ch} placeholder="Expected maturity amount" min="0" /></div>
       <div className="fg"><label className="fl">Notes</label><textarea className="fta" name="notes" value={f.notes} onChange={ch} rows={2} placeholder="Additional notes..." /></div>
@@ -130,6 +130,13 @@ export default function InsurancePage() {
   const [edit, setEdit] = useState(null);
   const [delId, setDelId] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [sortField, setSortField] = useState('dueDate');
+  const [sortDir, setSortDir] = useState('asc');
+
+  const toggleSort = (field) => {
+    if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortField(field); setSortDir('asc'); }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -159,18 +166,50 @@ export default function InsurancePage() {
     if (filter === 'inactive') return !i.isActive;
     if (filter === 'maintaining') return i.isMaintaining;
     return true;
+  }).sort((a, b) => {
+    let av, bv;
+    if (sortField === 'dueDate')      { av = new Date(a.dueDate); bv = new Date(b.dueDate); }
+    else if (sortField === 'premium') { av = a.premiumAmount || 0; bv = b.premiumAmount || 0; }
+    else if (sortField === 'maturity'){ av = a.maturityDate ? new Date(a.maturityDate) : new Date('9999'); bv = b.maturityDate ? new Date(b.maturityDate) : new Date('9999'); }
+    else { av = 0; bv = 0; }
+    return sortDir === 'asc' ? (av < bv ? -1 : av > bv ? 1 : 0) : (av > bv ? -1 : av < bv ? 1 : 0);
   });
 
   const totalPremium = items.filter(i => i.isActive && i.isMaintaining).reduce((s, i) => s + (i.premiumAmount || 0), 0);
   const totalMaturity = items.reduce((s, i) => s + (i.maturityAmount || 0), 0);
   const dueSoon = items.filter(i => { const s = getStatus(i); return s.days !== null && s.days <= 30; });
+  const overdue = items.filter(i => { const s = getStatus(i); return s.label === 'Overdue'; });
+
+  const SortTh = ({ field, label, align = 'left' }) => (
+    <th style={{ textAlign: align, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => toggleSort(field)}>
+      {label}
+      <span style={{ marginLeft: 4, fontSize: 10, color: sortField === field ? 'var(--blue)' : 'var(--t3)' }}>
+        {sortField === field ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+      </span>
+    </th>
+  );
 
   if (loading) return <div className="spin-center"><div className="spin spin-lg" /></div>;
 
   return (
     <div>
       <div className="page-head">
-        <div><div className="page-title">🛡️ Insurance Tracker</div><div className="page-sub">{items.length} policies</div></div>
+        <div>
+          <div className="page-title">
+            🛡️ Insurance Tracker
+            {overdue.length > 0 && (
+              <span style={{ marginLeft: 10, background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 900, padding: '2px 9px', borderRadius: 20, verticalAlign: 'middle' }}>
+                {overdue.length} Overdue
+              </span>
+            )}
+            {dueSoon.length > 0 && overdue.length === 0 && (
+              <span style={{ marginLeft: 10, background: 'var(--orange)', color: '#fff', fontSize: 12, fontWeight: 900, padding: '2px 9px', borderRadius: 20, verticalAlign: 'middle' }}>
+                {dueSoon.length} Due Soon
+              </span>
+            )}
+          </div>
+          <div className="page-sub">{items.length} policies</div>
+        </div>
         <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add Policy</button>
       </div>
 
@@ -180,7 +219,7 @@ export default function InsurancePage() {
           { icon: '🛡️', label: 'Total Policies', val: items.length, c: 'var(--blue)' },
           { icon: '💸', label: 'Annual Premium', val: fmt(totalPremium), c: 'var(--red)' },
           { icon: '💰', label: 'Total Maturity', val: fmt(totalMaturity), c: 'var(--green)' },
-          { icon: '⚠️', label: 'Due Soon (30d)', val: dueSoon.length, c: 'var(--orange)' },
+          { icon: '⚠️', label: 'Due Soon (30d)', val: dueSoon.length, c: dueSoon.length > 0 ? 'var(--orange)' : 'var(--t3)' },
         ].map((s, i) => (
           <div key={i} className="stat" style={{ '--c': s.c }}>
             <div className="stat-icon">{s.icon}</div>
@@ -197,7 +236,7 @@ export default function InsurancePage() {
           {dueSoon.map(i => (
             <div key={i.id} className="flex justify-between items-center fs-13 mb-1">
               <span className="fw-600">{i.name} ({i.company})</span>
-              <span style={{ color: 'var(--orange)' }}>Due: {fmtDate(i.dueDate)} — {fmt(i.dueAmount || i.premiumAmount)}</span>
+              <span style={{ color: 'var(--orange)' }}>Due: {fmtDate(i.dueDate)} — Premium: {fmt(i.premiumAmount)}</span>
             </div>
           ))}
         </div>
@@ -206,7 +245,9 @@ export default function InsurancePage() {
       {/* Filter */}
       <div className="filters mb-3">
         {[['all','All'],['active','Active'],['due_soon','Due Soon'],['maintaining','Investing'],['inactive','Inactive']].map(([val, label]) => (
-          <button key={val} className={`btn btn-sm ${filter === val ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(val)}>{label}</button>
+          <button key={val} className={`btn btn-sm ${filter === val ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(val)}>
+            {val === 'due_soon' && dueSoon.length > 0 ? `Due Soon (${dueSoon.length})` : label}
+          </button>
         ))}
       </div>
 
@@ -216,14 +257,14 @@ export default function InsurancePage() {
         : <div className="tbl-wrap"><table className="tbl">
           <thead>
             <tr>
+              <th style={{ width: 6, padding: 0 }}></th>
               <th>Plan Name</th>
               <th>Company</th>
               <th>Type</th>
               <th>Frequency</th>
-              <th style={{ textAlign: 'right' }}>Premium</th>
-              <th>Next Due</th>
-              <th style={{ textAlign: 'right' }}>Due Amount</th>
-              <th>Maturity Date</th>
+              <SortTh field="premium" label="Premium" align="right" />
+              <SortTh field="dueDate" label="Next Due" />
+              <SortTh field="maturity" label="Maturity Date" />
               <th style={{ textAlign: 'right' }}>Maturity Amt</th>
               <th>Status</th>
               <th>Investing</th>
@@ -233,8 +274,12 @@ export default function InsurancePage() {
           <tbody>
             {filtered.map(i => {
               const status = getStatus(i);
+              const isOverdue = status.label === 'Overdue';
+              const isDueSoon = status.color === STATUS_COLORS.due_soon;
+              const leftColor = isOverdue ? 'var(--red)' : isDueSoon ? 'var(--orange)' : i.isActive ? 'var(--green)' : 'var(--t3)';
               return (
-                <tr key={i.id}>
+                <tr key={i.id} style={{ borderLeft: `4px solid ${leftColor}` }}>
+                  <td style={{ padding: 0, width: 6, background: leftColor }} />
                   <td>
                     <div className="fw-600">{i.name}</div>
                     {i.policyNumber && <div className="fs-11 text-muted">#{i.policyNumber}</div>}
@@ -242,12 +287,20 @@ export default function InsurancePage() {
                   <td className="fs-13">{i.company || '—'}</td>
                   <td><span className="badge">{i.type}</span></td>
                   <td className="fs-12 text-muted">{i.paymentFrequency}</td>
-                  <td style={{ textAlign: 'right' }}><span className="amt">{fmt(i.premiumAmount)}</span></td>
-                  <td className="font-mono fs-12">{fmtDate(i.dueDate)}</td>
-                  <td style={{ textAlign: 'right' }}><span className="amt amt-r">{fmt(i.dueAmount)}</span></td>
+                  <td style={{ textAlign: 'right' }}><span className="amt fw-700">{fmt(i.premiumAmount)}</span></td>
+                  <td>
+                    <div className="font-mono fs-12" style={{ color: isOverdue ? 'var(--red)' : isDueSoon ? 'var(--orange)' : 'var(--text)', fontWeight: isOverdue || isDueSoon ? 700 : 400 }}>
+                      {fmtDate(i.dueDate)}
+                    </div>
+                    {(isOverdue || isDueSoon) && <div className="fs-11 fw-700" style={{ color: leftColor }}>{status.label}</div>}
+                  </td>
                   <td className="font-mono fs-12">{i.maturityDate ? fmtDate(i.maturityDate) : '—'}</td>
                   <td style={{ textAlign: 'right' }}><span className="amt amt-g">{i.maturityAmount ? fmt(i.maturityAmount) : '—'}</span></td>
-                  <td><span style={{ background: status.color + '22', color: status.color, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>{status.label}</span></td>
+                  <td>
+                    <span style={{ background: leftColor + '22', color: leftColor, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      {status.label}
+                    </span>
+                  </td>
                   <td style={{ textAlign: 'center' }}>{i.isMaintaining ? '✅' : '❌'}</td>
                   <td>
                     <div className="actions">

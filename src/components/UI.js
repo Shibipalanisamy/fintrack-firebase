@@ -9,11 +9,13 @@ const NAV = [
   { icon: '📊', label: 'Dashboard',      to: '/' },
   { icon: '💵', label: 'Income',          to: '/income' },
   { icon: '💸', label: 'Expenses',        to: '/expenses' },
+  { icon: '💳', label: 'Cards',           to: '/cards' },
   { icon: '📈', label: 'Portfolio',       to: '/portfolio' },
   { icon: '🏛️', label: 'Net Worth',       to: '/networth' },
   { icon: '🎯', label: 'Goals',           to: '/goals' },
   { icon: '🧮', label: 'Loan Calculator', to: '/loans' },
   { icon: '📉', label: 'Reports',         to: '/reports' },
+  { icon: '🏦', label: 'Banking',         to: '/banking' },
   { icon: '🛡️', label: 'Insurance',       to: '/insurance' },
   { icon: '⚙️', label: 'Settings',        to: '/settings' },
 ];
@@ -52,7 +54,7 @@ export function Sidebar({ open, onClose }) {
   );
 }
 
-const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals' };
+const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals', '/cards': 'Card Management', '/banking': 'Banking' };
 
 export function Layout({ children }) {
   const { isDark, toggle } = useTheme();
@@ -114,7 +116,81 @@ export function MonthYearFilter({ month, year, setMonth, setYear }) {
   );
 }
 
+// ─── Date Range Filter ──────────────────────────────────────
+export function DateRangeFilter({ dateFrom, dateTo, onChange }) {
+  const now = new Date();
+  const fmt = d => d.toISOString().slice(0, 10);
+
+  const PRESETS = [
+    { label: 'This week',  from: () => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return fmt(d); },                  to: () => fmt(now) },
+    { label: 'This month', from: () => fmt(new Date(now.getFullYear(), now.getMonth(), 1)),                                             to: () => fmt(now) },
+    { label: 'Last month', from: () => fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1)),                                         to: () => fmt(new Date(now.getFullYear(), now.getMonth(), 0)) },
+    { label: 'Q1',         from: () => `${now.getFullYear()}-01-01`, to: () => `${now.getFullYear()}-03-31` },
+    { label: 'Q2',         from: () => `${now.getFullYear()}-04-01`, to: () => `${now.getFullYear()}-06-30` },
+    { label: 'Q3',         from: () => `${now.getFullYear()}-07-01`, to: () => `${now.getFullYear()}-09-30` },
+    { label: 'Q4',         from: () => `${now.getFullYear()}-10-01`, to: () => `${now.getFullYear()}-12-31` },
+    { label: 'This FY',    from: () => now.getMonth() >= 3 ? `${now.getFullYear()}-04-01` : `${now.getFullYear()-1}-04-01`, to: () => now.getMonth() >= 3 ? `${now.getFullYear()+1}-03-31` : `${now.getFullYear()}-03-31` },
+    { label: 'Last FY',    from: () => now.getMonth() >= 3 ? `${now.getFullYear()-1}-04-01` : `${now.getFullYear()-2}-04-01`, to: () => now.getMonth() >= 3 ? `${now.getFullYear()}-03-31` : `${now.getFullYear()-1}-03-31` },
+    { label: 'All time',   from: () => '2020-01-01', to: () => fmt(now) },
+  ];
+
+  const activePreset = PRESETS.find(p => p.from() === dateFrom && p.to() === dateTo)?.label;
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+      {/* Quick preset chips */}
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {PRESETS.map(p => (
+          <button key={p.label} type="button" onClick={() => onChange(p.from(), p.to())}
+            style={{ padding: '4px 10px', borderRadius: 20, border: `1.5px solid ${activePreset === p.label ? 'var(--blue)' : 'var(--border2)'}`, background: activePreset === p.label ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: activePreset === p.label ? 'var(--blue)' : 'var(--t2)', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {/* Custom from→to */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'var(--bg3)', border: '1.5px solid var(--border2)', borderRadius: 8, padding: '3px 8px' }}>
+        <input type="date" value={dateFrom} onChange={e => onChange(e.target.value, dateTo)}
+          style={{ background: 'none', border: 'none', outline: 'none', fontSize: 11, color: 'var(--text)', width: 110 }} />
+        <span style={{ color: 'var(--t3)', fontSize: 12, fontWeight: 700 }}>→</span>
+        <input type="date" value={dateTo} onChange={e => onChange(dateFrom, e.target.value)}
+          style={{ background: 'none', border: 'none', outline: 'none', fontSize: 11, color: 'var(--text)', width: 110 }} />
+      </div>
+    </div>
+  );
+}
+
 export function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return <div className="ct"><div className="ct-label">{label}</div><div className="ct-val">₹{Number(payload[0].value).toLocaleString('en-IN')}</div></div>;
+}
+
+// ─── Date Stepper ──────────────────────────────────────────
+// Drop-in replacement for <input type="date"> with ◀ ▶ day buttons
+export function DateStepper({ value, onChange, name, required, max, min, label }) {
+  const step = (days) => {
+    const d = new Date(value || new Date().toISOString().split('T')[0]);
+    d.setDate(d.getDate() + days);
+    const iso = d.toFullYear ? d.toFullYear() : d.toISOString().split('T')[0];
+    // Format as YYYY-MM-DD
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const newVal = `${y}-${m}-${day}`;
+    if (max && newVal > max) return;
+    if (min && newVal < min) return;
+    onChange({ target: { name: name || 'date', value: newVal } });
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <button type="button" onClick={() => step(-1)}
+        style={{ width: 28, height: 36, borderRadius: 7, border: '1.5px solid var(--border2)', background: 'var(--bg3)', color: 'var(--t2)', cursor: 'pointer', fontSize: 14, fontWeight: 700, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        title="Previous day">◀</button>
+      <input className="fi" type="date" name={name || 'date'} value={value || ''} onChange={onChange}
+        required={required} max={max} min={min}
+        style={{ flex: 1, textAlign: 'center' }} />
+      <button type="button" onClick={() => step(1)}
+        style={{ width: 28, height: 36, borderRadius: 7, border: '1.5px solid var(--border2)', background: 'var(--bg3)', color: 'var(--t2)', cursor: 'pointer', fontSize: 14, fontWeight: 700, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        title="Next day">▶</button>
+    </div>
+  );
 }

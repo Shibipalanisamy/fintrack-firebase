@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { goalsService } from '../utils/dbService';
 import { fmt, today } from '../utils/helpers';
-import { Modal, ConfirmDelete } from '../components/UI';
+import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import toast from 'react-hot-toast';
 
 const GOAL_ICONS = ['🚗','🏠','✈️','💍','📚','💻','👶','🏥','💰','🎓','🌍','🛒','🏋️','🎸','📷','⛵','🏖️','🎯'];
@@ -89,7 +89,7 @@ function GoalForm({ item, onSave, onClose }) {
 
       <div className="frow">
         <div className="fg"><label className="fl">Target Date</label>
-          <input className="fi" type="date" name="targetDate" value={f.targetDate} onChange={ch} />
+          <DateStepper name="targetDate" value={f.targetDate} onChange={ch} />
         </div>
         <div className="fg"><label className="fl">Priority</label>
           <select className="fi" name="priority" value={f.priority} onChange={ch}>

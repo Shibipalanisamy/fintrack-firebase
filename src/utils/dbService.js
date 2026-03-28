@@ -1,16 +1,70 @@
 import { db, auth } from './firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, orderBy, getDocs, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, orderBy, getDocs, Timestamp, setDoc, getDoc } from 'firebase/firestore';
 
 const uid = () => auth.currentUser?.uid;
+const toDate = (d) => {
+  if (!d) return new Date();
+  if (d?.toDate) return d.toDate(); // Firestore Timestamp
+  if (d instanceof Date) return d;
+  const parsed = new Date(d);
+  return isNaN(parsed.getTime()) ? new Date() : parsed;
+};
 
-// ─── Session Cache (cleared on page refresh) ──────────────
-const _cache = {};
-const _cacheGet = (key) => _cache[key];
-const _cacheSet = (key, val) => { _cache[key] = val; return val; };
-const _cacheClear = (key) => { delete _cache[key]; };
-
-
-const toDate = (d) => d?.toDate?.() || new Date(d);
+// ─── PIN SERVICE (cross-device sync) ──────────────────────
+// Stores PIN in Firestore userSettings/{uid} + caches in localStorage
+const PIN_CACHE_KEY = 'fintrack_page_pins_v2';
+export const pinService = {
+  // Read from localStorage cache instantly
+  getCached(page) {
+    try { return JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || '{}')[page] || ''; } catch { return ''; }
+  },
+  // Write to localStorage cache
+  setCached(page, pin) {
+    try { const d = JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || '{}'); d[page] = pin; localStorage.setItem(PIN_CACHE_KEY, JSON.stringify(d)); } catch {}
+  },
+  // Fetch PIN from Firestore and update cache
+  async get(page) {
+    try {
+      const snap = await getDoc(doc(db, 'userSettings', uid()));
+      if (snap.exists()) {
+        const pins = snap.data().pins || {};
+        // Sync all pins to local cache
+        localStorage.setItem(PIN_CACHE_KEY, JSON.stringify(pins));
+        return pins[page] || '';
+      }
+    } catch {}
+    return this.getCached(page);
+  },
+  // Save PIN to both Firestore and localStorage
+  async set(page, pin) {
+    try {
+      const ref = doc(db, 'userSettings', uid());
+      const snap = await getDoc(ref);
+      const existing = snap.exists() ? (snap.data().pins || {}) : {};
+      const updated = { ...existing, [page]: pin };
+      await setDoc(ref, { pins: updated, updatedAt: Timestamp.now() }, { merge: true });
+      localStorage.setItem(PIN_CACHE_KEY, JSON.stringify(updated));
+    } catch {
+      // Fallback: save locally only
+      this.setCached(page, pin);
+    }
+  },
+  // Remove PIN from Firestore and cache
+  async remove(page) {
+    try {
+      const ref = doc(db, 'userSettings', uid());
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        const existing = snap.data().pins || {};
+        delete existing[page];
+        await setDoc(ref, { pins: existing, updatedAt: Timestamp.now() }, { merge: true });
+        localStorage.setItem(PIN_CACHE_KEY, JSON.stringify(existing));
+      }
+    } catch {
+      this.setCached(page, '');
+    }
+  }
+};
 
 // ─── INCOME ───────────────────────────────────────────────
 export const incomeService = {
@@ -18,7 +72,10 @@ export const incomeService = {
     const q = query(collection(db, 'income'), where('userId', '==', uid()), orderBy('date', 'desc'));
     const snap = await getDocs(q);
     let docs = snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }));
-    if (filters.month && filters.year) docs = docs.filter(d => new Date(d.date).getMonth() + 1 === +filters.month && new Date(d.date).getFullYear() === +filters.year);
+    if (filters.dateFrom && filters.dateTo) {
+      const from = new Date(filters.dateFrom); const to = new Date(filters.dateTo); to.setHours(23,59,59,999);
+      docs = docs.filter(d => new Date(d.date) >= from && new Date(d.date) <= to);
+    } else if (filters.month && filters.year) docs = docs.filter(d => new Date(d.date).getMonth() + 1 === +filters.month && new Date(d.date).getFullYear() === +filters.year);
     else if (filters.year) docs = docs.filter(d => new Date(d.date).getFullYear() === +filters.year);
     if (filters.search) { const s = filters.search.toLowerCase(); docs = docs.filter(d => d.notes?.toLowerCase().includes(s) || d.category?.toLowerCase().includes(s)); }
     return docs;
@@ -34,10 +91,13 @@ export const expenseService = {
     const q = query(collection(db, 'expenses'), where('userId', '==', uid()), orderBy('date', 'desc'));
     const snap = await getDocs(q);
     let docs = snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }));
-    if (filters.month && filters.year) docs = docs.filter(d => new Date(d.date).getMonth() + 1 === +filters.month && new Date(d.date).getFullYear() === +filters.year);
+    if (filters.dateFrom && filters.dateTo) {
+      const from = new Date(filters.dateFrom); const to = new Date(filters.dateTo); to.setHours(23,59,59,999);
+      docs = docs.filter(d => new Date(d.date) >= from && new Date(d.date) <= to);
+    } else if (filters.month && filters.year) docs = docs.filter(d => new Date(d.date).getMonth() + 1 === +filters.month && new Date(d.date).getFullYear() === +filters.year);
     else if (filters.year) docs = docs.filter(d => new Date(d.date).getFullYear() === +filters.year);
     if (filters.category) docs = docs.filter(d => d.category === filters.category);
-    if (filters.search) { const s = filters.search.toLowerCase(); docs = docs.filter(d => d.itemName?.toLowerCase().includes(s) || d.notes?.toLowerCase().includes(s)); }
+    if (filters.search) { const s = filters.search.toLowerCase(); docs = docs.filter(d => d.itemName?.toLowerCase().includes(s) || d.notes?.toLowerCase().includes(s) || d.category?.toLowerCase().includes(s)); }
     return docs;
   },
   async create(data) { return addDoc(collection(db, 'expenses'), { ...data, userId: uid(), date: Timestamp.fromDate(new Date(data.date)), createdAt: Timestamp.now() }); },
@@ -98,6 +158,7 @@ export const loanService = {
   },
   async create(data) { return addDoc(collection(db, 'loans'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
   async update(id, data) { return updateDoc(doc(db, 'loans', id), data); },
+  async close(id, summary) { return updateDoc(doc(db, 'loans', id), { status: 'closed', closedAt: Timestamp.now(), closedSummary: summary }); },
   async delete(id) { return deleteDoc(doc(db, 'loans', id)); }
 };
 
@@ -186,13 +247,9 @@ const DEFAULT_STOCKS = [
 
 export const stockMasterService = {
   async getAll() {
-    const cacheKey = `stockmaster_${uid()}`;
-    const cached = _cacheGet(cacheKey);
-    if (cached) return cached;
     const q = query(collection(db, 'stockmaster'), where('userId', '==', uid()));
     const snap = await getDocs(q);
-    const result = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.symbol.localeCompare(b.symbol));
-    return _cacheSet(cacheKey, result);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.symbol.localeCompare(b.symbol));
   },
   async seedDefaults(userId) {
     const snap = await getDocs(query(collection(db, 'stockmaster'), where('userId', '==', userId)));
@@ -202,9 +259,9 @@ export const stockMasterService = {
       }
     }
   },
-  async create(data) { _cacheClear(`stockmaster_${uid()}`); return addDoc(collection(db, 'stockmaster'), { ...data, userId: uid() }); },
-  async update(id, data) { _cacheClear(`stockmaster_${uid()}`); return updateDoc(doc(db, 'stockmaster', id), data); },
-  async delete(id) { _cacheClear(`stockmaster_${uid()}`); return deleteDoc(doc(db, 'stockmaster', id)); }
+  async create(data) { return addDoc(collection(db, 'stockmaster'), { ...data, userId: uid() }); },
+  async update(id, data) { return updateDoc(doc(db, 'stockmaster', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'stockmaster', id)); }
 };
 
 // ─── LOAN PAYMENTS ────────────────────────────────────────
@@ -231,14 +288,28 @@ export const goldService = {
 };
 
 // ─── DIVIDENDS ────────────────────────────────────────────
+const parseDateSafe = (d) => {
+  if (!d) return new Date();
+  // Handle YYYY-MM-DD string — avoid UTC midnight timezone shift by parsing as local
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    const [y, m, day] = d.split('-').map(Number);
+    return new Date(y, m - 1, day);
+  }
+  if (d?.toDate) return d.toDate(); // Firestore Timestamp
+  return new Date(d);
+};
+
 export const dividendService = {
   async getAll() {
-    const q = query(collection(db, 'dividends'), where('userId', '==', uid()), orderBy('date', 'desc'));
+    // No orderBy — sort client-side to avoid requiring a composite Firestore index
+    const q = query(collection(db, 'dividends'), where('userId', '==', uid()));
     const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }));
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
   },
-  async create(data) { return addDoc(collection(db, 'dividends'), { ...data, userId: uid(), date: Timestamp.fromDate(new Date(data.date)), createdAt: Timestamp.now() }); },
-  async update(id, data) { return updateDoc(doc(db, 'dividends', id), { ...data, date: Timestamp.fromDate(new Date(data.date)) }); },
+  async create(data) { return addDoc(collection(db, 'dividends'), { ...data, userId: uid(), date: Timestamp.fromDate(parseDateSafe(data.date)), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'dividends', id), { ...data, date: Timestamp.fromDate(parseDateSafe(data.date)) }); },
   async delete(id) { return deleteDoc(doc(db, 'dividends', id)); }
 };
 
@@ -285,7 +356,46 @@ export const brokerService = {
       for (const b of DEFAULT_BROKERS) await addDoc(collection(db, 'brokers'), { ...b, userId, isDefault: true });
     }
   },
-  async create(data) { _cacheClear(`brokers_${uid()}`); return addDoc(collection(db, 'brokers'), { ...data, userId: uid() }); },
-  async update(id, data) { _cacheClear(`brokers_${uid()}`); return updateDoc(doc(db, 'brokers', id), data); },
-  async delete(id) { _cacheClear(`brokers_${uid()}`); return deleteDoc(doc(db, 'brokers', id)); }
+  async create(data) { return addDoc(collection(db, 'brokers'), { ...data, userId: uid() }); },
+  async update(id, data) { return updateDoc(doc(db, 'brokers', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'brokers', id)); }
+};
+
+
+
+// ─── CARDS SERVICE ────────────────────────────────────────
+export const cardsService = {
+  async getAll() {
+    const q = query(collection(db, 'cards'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async create(data) { return addDoc(collection(db, 'cards'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'cards', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'cards', id)); }
+};
+
+// ─── ACCOUNTS SERVICE (double-entry) ──────────────────────
+export const accountsService = {
+  async getAll() {
+    const q = query(collection(db, 'accounts'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async create(data) { return addDoc(collection(db, 'accounts'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'accounts', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'accounts', id)); }
+};
+
+export const ledgerService = {
+  async getAll() {
+    const q = query(collection(db, 'ledger'), where('userId', '==', uid()), orderBy('date', 'desc'));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }));
+  },
+  async create(data) {
+    return addDoc(collection(db, 'ledger'), { ...data, userId: uid(), date: Timestamp.fromDate(new Date(data.date)), createdAt: Timestamp.now() });
+  },
+  async update(id, data) { return updateDoc(doc(db, 'ledger', id), { ...data, date: Timestamp.fromDate(new Date(data.date)) }); },
+  async delete(id) { return deleteDoc(doc(db, 'ledger', id)); }
 };

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { db, auth } from '../utils/firebase';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { expenseService, categoryService, recurringService } from '../utils/dbService';
 import { fmt, fmtDate, fmtDateInput, today, exportCSV, importCSV } from '../utils/helpers';
-import { Modal, ConfirmDelete, MonthYearFilter } from '../components/UI';
+import { Modal, ConfirmDelete, MonthYearFilter, DateStepper, DateRangeFilter } from '../components/UI';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Legend, CartesianGrid } from 'recharts';
 import { PALETTE } from '../utils/helpers';
 import toast from 'react-hot-toast';
@@ -125,27 +127,55 @@ function AmountInput({ value, onChange }) {
 
 // ─── Expense Form ──────────────────────────────────────────
 function ExpForm({ item, cats, onSave, onClose }) {
-  const PAID_VIA = ['HDFC Bank','Axis Bank','IDFC First Bank','Paytm','ICICI','ICICI Credit Card','Cash Wallet','Meal Card','Cash','UTS Wallet','Amazon Wallet'];
-  const [f, setF] = useState({ date: today(), category: cats.find(c => c.isFavorite)?.name || cats[0]?.name || 'Grocery', itemName: '', paidVia: 'HDFC Bank', amount: '', notes: '', ...(item ? { ...item, date: fmtDateInput(item.date) } : {}) });
+  const STATIC_PAID_VIA = ['Paytm', 'Cash', 'Cash Wallet', 'Meal Card', 'UTS Wallet', 'Amazon Wallet'];
+  const [bankPaidVia, setBankPaidVia] = useState([]);
+  const [f, setF] = useState({ date: today(), category: cats.find(c => c.isFavorite)?.name || cats[0]?.name || 'Grocery', itemName: '', paidVia: '', amount: '', notes: '', ...(item ? { ...item, date: fmtDateInput(item.date) } : {}) });
   const [loading, setLoading] = useState(false);
   const ch = e => setF(p => ({ ...p, [e.target.name]: e.target.value }));
   const submit = async e => { e.preventDefault(); const amt = parseFloat(f.amount); if (!amt || amt <= 0) { toast.error('Enter a valid amount'); return; } setLoading(true); try { await onSave({ ...f, amount: amt }); } finally { setLoading(false); } };
+
+  // Load bank accounts from Firestore and merge with static list
+  useEffect(() => {
+    const uid = auth.currentUser?.uid; if (!uid) return;
+    getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', uid)))
+      .then(snap => {
+        const names = snap.docs.map(d => d.data().name).filter(Boolean).sort();
+        setBankPaidVia(names);
+        // Pre-select first bank if no item being edited and no paidVia set
+        if (!item && !f.paidVia && names.length > 0) setF(p => ({ ...p, paidVia: names[0] }));
+      })
+      .catch(() => {});
+  }, []);
+
+  // Merged list: bank accounts first (linked to banking sync), then static wallets
+  const allPaidVia = [...bankPaidVia, ...STATIC_PAID_VIA.filter(s => !bankPaidVia.includes(s))];
+
   return (
     <form onSubmit={submit}>
-      <div className="frow"><div className="fg"><label className="fl">Date</label><input className="fi" type="date" name="date" value={f.date} onChange={ch} required max={today()} /></div></div>
+      <div className="frow"><div className="fg"><label className="fl">Date</label><DateStepper name="date" value={f.date} onChange={ch} required max={today()} /></div></div>
       <div className="fg"><label className="fl">Amount (Rs) — type expression like 100+50</label><AmountInput value={f.amount} onChange={val => setF(p => ({ ...p, amount: val }))} /></div>
       <div className="fg"><label className="fl">Category</label><CategoryDropdown cats={cats} value={f.category} onChange={val => setF(p => ({ ...p, category: val }))} /></div>
 
       <div className="fg">
-        <label className="fl">Paid Via</label>
+        <label className="fl">
+          Paid Via
+          {bankPaidVia.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)', fontWeight: 700, background: 'rgba(34,197,94,.1)', borderRadius: 10, padding: '1px 7px' }}>🏦 {bankPaidVia.length} bank{bankPaidVia.length > 1 ? 's' : ''} linked</span>}
+        </label>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginTop: 4 }}>
-          {PAID_VIA.map(p => (
-            <button key={p} type="button" onClick={() => setF(prev => ({ ...prev, paidVia: p }))}
-              style={{ padding: '7px 6px', borderRadius: 8, border: `2px solid ${f.paidVia === p ? 'var(--blue)' : 'var(--border2)'}`, background: f.paidVia === p ? 'rgba(77,158,255,.12)' : 'var(--bg3)', cursor: 'pointer', fontSize: 11, fontWeight: 700, color: f.paidVia === p ? 'var(--blue)' : 'var(--t3)', textAlign: 'center', lineHeight: 1.3 }}>
-              {p}
-            </button>
-          ))}
+          {allPaidVia.map(p => {
+            const isBank = bankPaidVia.includes(p);
+            return (
+              <button key={p} type="button" onClick={() => setF(prev => ({ ...prev, paidVia: p }))}
+                style={{ padding: '7px 6px', borderRadius: 8, border: `2px solid ${f.paidVia === p ? (isBank ? 'var(--blue)' : 'var(--border2)') : 'var(--border2)'}`, background: f.paidVia === p ? (isBank ? 'rgba(77,158,255,.12)' : 'rgba(148,163,184,.1)') : 'var(--bg3)', cursor: 'pointer', fontSize: 11, fontWeight: 700, color: f.paidVia === p ? (isBank ? 'var(--blue)' : 'var(--text)') : 'var(--t3)', textAlign: 'center', lineHeight: 1.3, transition: 'all .15s', position: 'relative' }}>
+                {isBank && <span style={{ position: 'absolute', top: 3, right: 4, fontSize: 8, color: 'var(--green)', fontWeight: 900 }}>🏦</span>}
+                {p}
+              </button>
+            );
+          })}
         </div>
+        {f.paidVia && bankPaidVia.includes(f.paidVia) && (
+          <div style={{ marginTop: 5, fontSize: 11, color: 'var(--green)', fontWeight: 700 }}>✅ Will deduct from <strong>{f.paidVia}</strong> balance in Banking page</div>
+        )}
       </div>
       <div className="fg"><label className="fl">Notes</label><textarea className="fta" name="notes" value={f.notes} onChange={ch} rows={2} /></div>
       <div className="modal-foot"><button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button><button type="submit" className="btn btn-primary" disabled={loading}>{loading ? <span className="spin" /> : null}{item ? 'Update' : 'Add Expense'}</button></div>
@@ -159,6 +189,21 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
   const catMap = {};
   items.forEach(i => { catMap[i.category] = (catMap[i.category] || 0) + +i.amount; });
   const sorted = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
+
+  // Budget state — stored in localStorage per category
+  const BUDGET_KEY = 'fintrack_cat_budgets';
+  const [budgets, setBudgets] = useState(() => { try { return JSON.parse(localStorage.getItem(BUDGET_KEY) || '{}'); } catch { return {}; } });
+  const [editBudget, setEditBudget] = useState(null); // category name being edited
+  const [budgetInput, setBudgetInput] = useState('');
+  const saveBudget = (cat, val) => {
+    const updated = { ...budgets, [cat]: parseFloat(val) || 0 };
+    if (!val || parseFloat(val) <= 0) delete updated[cat];
+    localStorage.setItem(BUDGET_KEY, JSON.stringify(updated));
+    setBudgets(updated);
+    setEditBudget(null);
+  };
+  const totalBudget = Object.values(budgets).reduce((s, v) => s + v, 0);
+  const budgetedCats = Object.keys(budgets).filter(k => budgets[k] > 0);
   const pieData = sorted.slice(0, 10).map(([name, value], idx) => ({ name, value, color: PALETTE[idx % PALETTE.length] }));
 
   const varItems  = allItems ? allItems.filter(i => !isFixedCat(i.category)) : items;
@@ -219,28 +264,98 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
         {showFixed && fixPie.length > 0 && <PieCard title="📌 Fixed Expenses" data={fixPie} chartTotal={fixTotal} />}
       </div>
 
-      {/* Full table */}
+      {/* Budget summary strip */}
+      {budgetedCats.length > 0 && (
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginBottom:12 }}>
+          <div style={{ background:'rgba(77,158,255,.07)', border:'1px solid rgba(77,158,255,.2)', borderRadius:10, padding:'8px 14px', fontSize:12 }}>
+            <span className="text-muted">Total Budget: </span><span className="fw-800" style={{ color:'var(--blue)' }}>{fmt(totalBudget)}</span>
+          </div>
+          <div style={{ background: total <= totalBudget ? 'rgba(34,197,94,.07)' : 'rgba(244,63,94,.07)', border:`1px solid ${total <= totalBudget ? 'rgba(34,197,94,.2)' : 'rgba(244,63,94,.2)'}`, borderRadius:10, padding:'8px 14px', fontSize:12 }}>
+            <span className="text-muted">Spent vs Budget: </span>
+            <span className="fw-800" style={{ color: total <= totalBudget ? 'var(--green)' : 'var(--red)' }}>
+              {total <= totalBudget ? `✅ ${fmt(totalBudget - total)} under` : `⚠️ ${fmt(total - totalBudget)} over`}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Full table with budget */}
       <div className="card">
-        <div className="card-title">📊 Category-wise Breakdown</div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div className="card-title" style={{ marginBottom:0 }}>📊 Category-wise Breakdown</div>
+          <div className="fs-11 text-muted">Click 🎯 to set budget per category</div>
+        </div>
         <div className="tbl-wrap"><table className="tbl">
-          <thead><tr><th>#</th><th>Category</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'right' }}>%</th><th>Bar</th></tr></thead>
+          <thead><tr>
+            <th>#</th><th>Category</th>
+            <th style={{ textAlign:'right' }}>Spent</th>
+            <th style={{ textAlign:'right' }}>Budget</th>
+            <th style={{ textAlign:'right' }}>Balance</th>
+            <th style={{ textAlign:'right' }}>%</th>
+            <th>Bar</th>
+            <th></th>
+          </tr></thead>
           <tbody>{sorted.map(([cat, amt], i) => {
             const pct = ((amt / total) * 100).toFixed(1);
+            const budget = budgets[cat] || 0;
+            const balance = budget > 0 ? budget - amt : null;
+            const overBudget = balance !== null && balance < 0;
+            const budgetPct = budget > 0 ? Math.min(100, (amt / budget) * 100) : parseFloat(pct);
             return (
-              <tr key={cat}>
+              <tr key={cat} style={{ background: overBudget ? 'rgba(244,63,94,.04)' : 'transparent' }}>
                 <td className="text-muted fs-12">{i + 1}</td>
-                <td className="fw-600 fs-13">{cat}</td>
-                <td style={{ textAlign: 'right' }}><span className="amt amt-r">{fmt(amt)}</span></td>
-                <td style={{ textAlign: 'right' }}><span className="fw-700" style={{ color: PALETTE[i % PALETTE.length] }}>{pct}%</span></td>
-                <td style={{ width: 120 }}>
-                  <div style={{ background: 'var(--bg3)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${pct}%`, background: PALETTE[i % PALETTE.length], borderRadius: 4 }} />
+                <td className="fw-600 fs-13">
+                  <div className="flex items-center gap-1">
+                    {cat}
+                    {overBudget && <span style={{ fontSize:10, background:'rgba(244,63,94,.15)', color:'var(--red)', borderRadius:20, padding:'1px 6px', fontWeight:700 }}>Over</span>}
                   </div>
+                </td>
+                <td style={{ textAlign:'right' }}><span className="amt amt-r">{fmt(amt)}</span></td>
+                <td style={{ textAlign:'right' }}>
+                  {editBudget === cat ? (
+                    <div className="flex gap-1" style={{ justifyContent:'flex-end' }}>
+                      <input autoFocus type="number" value={budgetInput} onChange={e => setBudgetInput(e.target.value)}
+                        onKeyDown={e => { if(e.key==='Enter') saveBudget(cat, budgetInput); if(e.key==='Escape') setEditBudget(null); }}
+                        style={{ width:80, padding:'3px 6px', borderRadius:6, border:'1.5px solid var(--blue)', background:'var(--bg3)', color:'var(--text)', fontSize:12, outline:'none' }}
+                        placeholder="0" min="0" />
+                      <button onClick={() => saveBudget(cat, budgetInput)} style={{ background:'var(--green)', border:'none', borderRadius:5, padding:'3px 7px', color:'#fff', cursor:'pointer', fontSize:11, fontWeight:700 }}>✓</button>
+                      <button onClick={() => setEditBudget(null)} style={{ background:'var(--bg3)', border:'1px solid var(--border2)', borderRadius:5, padding:'3px 7px', cursor:'pointer', fontSize:11, color:'var(--t3)' }}>✕</button>
+                    </div>
+                  ) : (
+                    <span className={`fw-600 fs-12 ${budget>0?'':'text-muted'}`} style={{ color: budget>0?'var(--blue)':undefined }}>
+                      {budget > 0 ? fmt(budget) : '—'}
+                    </span>
+                  )}
+                </td>
+                <td style={{ textAlign:'right' }}>
+                  {balance !== null
+                    ? <span className={`fw-700 fs-12 ${balance >= 0 ? 'amt-g' : 'amt-r'}`}>{balance >= 0 ? '+' : ''}{fmt(balance)}</span>
+                    : <span className="text-muted fs-12">—</span>}
+                </td>
+                <td style={{ textAlign:'right' }}><span className="fw-700" style={{ color: PALETTE[i % PALETTE.length] }}>{pct}%</span></td>
+                <td style={{ width:110 }}>
+                  <div style={{ background:'var(--bg3)', borderRadius:4, height:6, overflow:'hidden' }}>
+                    <div style={{ height:'100%', width:`${budgetPct}%`, background: overBudget ? 'var(--red)' : PALETTE[i % PALETTE.length], borderRadius:4, transition:'width .4s' }} />
+                  </div>
+                  {budget > 0 && <div className="fs-10 text-muted mt-1">{(amt/budget*100).toFixed(0)}% of budget</div>}
+                </td>
+                <td>
+                  <button title="Set budget" onClick={() => { setEditBudget(cat); setBudgetInput(budget > 0 ? String(budget) : ''); }}
+                    style={{ background:'none', border:'none', cursor:'pointer', fontSize:13, color:'var(--t3)', padding:'2px 4px' }}>🎯</button>
                 </td>
               </tr>
             );
           })}</tbody>
-          <tfoot><tr><td colSpan={2} className="text-muted fs-12" style={{ padding: '10px 14px' }}>TOTAL</td><td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="amt amt-r fw-800">{fmt(total)}</span></td><td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="fw-800">100%</span></td><td /></tr></tfoot>
+          <tfoot><tr>
+            <td colSpan={2} className="text-muted fs-12" style={{ padding:'10px 14px' }}>TOTAL</td>
+            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(total)}</span></td>
+            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-700" style={{ color:'var(--blue)' }}>{totalBudget > 0 ? fmt(totalBudget) : '—'}</span></td>
+            <td style={{ textAlign:'right', padding:'10px 14px' }}>
+              {totalBudget > 0 && <span className={`fw-800 ${total <= totalBudget ? 'amt-g' : 'amt-r'}`}>{total <= totalBudget ? '+' : ''}{fmt(totalBudget - total)}</span>}
+            </td>
+            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-800">100%</span></td>
+            <td colSpan={2} />
+          </tr></tfoot>
         </table></div>
       </div>
     </div>
@@ -775,7 +890,7 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
               </select>
             </div>
             <div className="fg"><label className="fl">Next Due Date</label>
-              <input className="fi" type="date" name="nextDue" value={form.nextDue} onChange={ch} />
+              <DateStepper name="nextDue" value={form.nextDue} onChange={ch} />
             </div>
           </div>
           <div className="fg"><label className="fl">Paid Via (optional)</label>
@@ -791,6 +906,146 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
+
+// ─── Category Detail Tab ───────────────────────────────────
+function CategoryDetailTab({ cats }) {
+  const now = new Date();
+  const [selCat, setSelCat]       = useState('');
+  const [selYear, setSelYear]     = useState(now.getFullYear());
+  const [records, setRecords]     = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [showNotes, setShowNotes] = useState(true);
+  const [sortField, setSortField] = useState('date');
+  const [sortDir, setSortDir]     = useState('desc');
+  const [search, setSearch]       = useState('');
+  const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
+  const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  useEffect(() => {
+    if (!selCat) return;
+    setLoading(true);
+    expenseService.getAll({ year: selYear, category: selCat })
+      .then(data => setRecords(data))
+      .catch(() => toast.error('Failed to load'))
+      .finally(() => setLoading(false));
+  }, [selCat, selYear]);
+
+  const sorted = [...records]
+    .filter(r => !search || (r.notes||'').toLowerCase().includes(search.toLowerCase()) || (r.paidVia||'').toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => {
+      const va = sortField==='amount' ? +a.amount : new Date(a.date).getTime();
+      const vb = sortField==='amount' ? +b.amount : new Date(b.date).getTime();
+      return sortDir==='asc' ? va-vb : vb-va;
+    });
+
+  const total = sorted.reduce((s,r) => s + +r.amount, 0);
+  const avgAmt = sorted.length > 0 ? total / sorted.length : 0;
+  const monthMap = {};
+  sorted.forEach(r => { const m = new Date(r.date).getMonth(); monthMap[m] = (monthMap[m]||0) + +r.amount; });
+
+  const SH = ({ field, label }) => (
+    <span onClick={() => { if(sortField===field) setSortDir(d=>d==='asc'?'desc':'asc'); else { setSortField(field); setSortDir('desc'); } }}
+      style={{ cursor:'pointer', userSelect:'none' }}>
+      {label} {sortField===field ? (sortDir==='asc'?'↑':'↓') : <span style={{color:'var(--t3)',fontSize:10}}>↕</span>}
+    </span>
+  );
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:16 }}>
+        <select className="fs" value={selCat} onChange={e => setSelCat(e.target.value)} style={{ minWidth:200 }}>
+          <option value="">— Choose a Category —</option>
+          {cats.filter(c=>c.isFavorite).length > 0 && (
+            <optgroup label="⭐ Favourites">
+              {cats.filter(c=>c.isFavorite).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+            </optgroup>
+          )}
+          <optgroup label="All Categories">
+            {cats.filter(c=>!c.isFavorite).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+          </optgroup>
+        </select>
+        <select className="fs btn-sm" value={selYear} onChange={e => setSelYear(+e.target.value)}>
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <label className="flex items-center gap-2 fs-13" style={{ cursor:'pointer', userSelect:'none' }}>
+          <input type="checkbox" checked={showNotes} onChange={e => setShowNotes(e.target.checked)} style={{ accentColor:'var(--blue)' }} />
+          Show Notes column
+        </label>
+      </div>
+
+      {!selCat ? (
+        <div className="card"><div className="empty"><div className="empty-icon">🔎</div><div className="empty-title">Choose a category</div><div className="empty-sub">Select a category and year to see all records</div></div></div>
+      ) : loading ? (
+        <div className="spin-center"><div className="spin spin-lg" /></div>
+      ) : (
+        <>
+          {/* Summary stats */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:10, marginBottom:14 }}>
+            {[
+              { icon:'📋', label:'Total Records',  val: records.length,               c:'var(--blue)' },
+              { icon:'💸', label:'Total Spent',     val: fmt(total),                   c:'var(--red)' },
+              { icon:'📊', label:'Avg per Entry',   val: fmt(avgAmt),                  c:'var(--orange)' },
+              { icon:'📅', label:'Active Months',   val: Object.keys(monthMap).length, c:'var(--purple)' },
+            ].map((s,i) => (
+              <div key={i} style={{ background:'var(--bg2)', border:'1px solid var(--border)', borderRadius:10, padding:'10px 14px', borderLeft:`3px solid ${s.c}` }}>
+                <div style={{ fontSize:11, color:'var(--t3)', marginBottom:2 }}>{s.icon} {s.label}</div>
+                <div style={{ fontSize:15, fontWeight:900, color:s.c }}>{s.val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Monthly breakdown chips */}
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:14 }}>
+            {MONTHS_SHORT.map((m, i) => monthMap[i] ? (
+              <div key={i} style={{ background:'var(--bg2)', border:'1px solid var(--border)', borderRadius:8, padding:'5px 12px', fontSize:12 }}>
+                <span className="fw-700">{m}</span> <span className="amt-r fw-700">{fmt(monthMap[i])}</span>
+                <span className="text-muted" style={{ fontSize:10, marginLeft:4 }}>{records.length > 0 ? ((monthMap[i]/total)*100).toFixed(0) : 0}%</span>
+              </div>
+            ) : null)}
+          </div>
+
+          {/* Note / paid-via search filter */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, background:'var(--bg2)', border:'1px solid var(--border2)', borderRadius:8, padding:'7px 12px', marginBottom:12 }}>
+            <span style={{ fontSize:13 }}>🔍</span>
+            <input style={{ background:'none', border:'none', outline:'none', color:'var(--text)', fontSize:13, flex:1 }}
+              placeholder="Filter by notes or paid via..."
+              value={search} onChange={e => setSearch(e.target.value)} />
+            {search && <button onClick={() => setSearch('')} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12 }}>✕</button>}
+          </div>
+
+          {sorted.length === 0 ? (
+            <div className="card"><div className="empty"><div className="empty-icon">🔎</div><div className="empty-title">No matching records</div></div></div>
+          ) : (
+            <div className="tbl-wrap"><table className="tbl">
+              <thead><tr>
+                <th><SH field="date" label="Date" /></th>
+                <th style={{ textAlign:'right' }}><SH field="amount" label="Amount" /></th>
+                <th>Paid Via</th>
+                {showNotes && <th>Notes</th>}
+              </tr></thead>
+              <tbody>
+                {sorted.map(r => (
+                  <tr key={r.id}>
+                    <td className="font-mono fs-12 text-muted">{fmtDate(r.date)}</td>
+                    <td style={{ textAlign:'right' }}><span className="amt amt-r fw-700">{fmt(r.amount)}</span></td>
+                    <td><span style={{ background:'var(--bg3)', border:'1px solid var(--border)', borderRadius:6, padding:'3px 8px', fontSize:12, fontWeight:700, color:'var(--blue)' }}>{r.paidVia || '—'}</span></td>
+                    {showNotes && <td className="text-muted fs-12">{r.notes || '—'}</td>}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr>
+                <td className="text-muted fs-12" style={{ padding:'10px 14px' }}>TOTAL ({sorted.length} records)</td>
+                <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(total)}</span></td>
+                <td colSpan={showNotes ? 2 : 1} />
+              </tr></tfoot>
+            </table></div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -1142,24 +1397,24 @@ export default function ExpensesPage() {
   const [delId, setDelId] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('');
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [year, setYear] = useState(now.getFullYear());
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; });
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0,10));
   const [sortOrder, setSortOrder] = useState('desc');
   const [sortField, setSortField] = useState('date');
-  const [tab, setTab] = useState('list'); // list | percent | groups
+  const [tab, setTab] = useState('list');
   const [selected, setSelected] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [confirmBulkDel, setConfirmBulkDel] = useState(false);
-  const [showFixed, setShowFixed] = useState(true); // global: true=all, false=variable only
+  const [showFixed, setShowFixed] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [exp, c] = await Promise.all([expenseService.getAll({ month, year, category: catFilter || undefined, search: search || undefined }), categoryService.getAll('expense')]);
+      const [exp, c] = await Promise.all([expenseService.getAll({ dateFrom, dateTo, category: catFilter || undefined, search: search || undefined }), categoryService.getAll('expense')]);
       setItems(exp); setCats(c); setSelected(new Set());
     } catch { toast.error('Failed to load'); }
     finally { setLoading(false); }
-  }, [month, year, catFilter, search]);
+  }, [dateFrom, dateTo, catFilter, search]);
 
   useEffect(() => { const t = setTimeout(load, search ? 400 : 0); return () => clearTimeout(t); }, [load]);
 
@@ -1288,7 +1543,6 @@ export default function ExpensesPage() {
       <div className="page-head">
         <div><div className="page-title">💸 Expenses</div><div className="page-sub">{filteredByToggle.length} records • Total: <span className="amt amt-r">{fmt(total)}</span>{!showFixed && <span style={{marginLeft:8,fontSize:11,color:'var(--orange)',fontWeight:700}}>(Variable only)</span>}</div></div>
         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
-          <MonthYearFilter month={month} year={year} setMonth={setMonth} setYear={setYear} />
           <label className="btn btn-secondary btn-sm" style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1 }}>
             {importing ? <><span className="spin" /> Importing...</> : '⬆️ Import CSV'}
             <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
@@ -1296,6 +1550,9 @@ export default function ExpensesPage() {
           <button className="btn btn-secondary btn-sm" onClick={() => exportCSV(items.map(i => ({ date: fmtDate(i.date), category: i.category, paidVia: i.paidVia || '', amount: i.amount, notes: i.notes || '' })), 'expenses.csv')}>⬇️ Export</button>
           <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add</button>
         </div>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
       </div>
 
       {/* One-time migration banner */}
@@ -1322,6 +1579,7 @@ export default function ExpensesPage() {
           { key: 'percent',   label: '📊 % Breakdown' },
           { key: 'groups',    label: '🗂️ Group Summary' },
           { key: 'compare',   label: '🔀 Compare' },
+          { key: 'catdetail', label: '🔎 Category Detail' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
@@ -1441,6 +1699,7 @@ export default function ExpensesPage() {
       {tab === 'percent'   && <PercentageTab items={filteredByToggle} showFixed={showFixed} isFixedCat={isFixedCat} allItems={items} />}
       {tab === 'groups'    && <GroupSummaryTab items={filteredByToggle} showFixed={showFixed} />}
       {tab === 'compare'   && <CompareTab showFixed={showFixed} isFixedCat={isFixedCat} />}
+      {tab === 'catdetail' && <CategoryDetailTab cats={cats} />}
 
       {modal && <Modal title={edit ? '✏️ Edit Expense' : '➕ Add Expense'} onClose={() => { setModal(false); setEdit(null); }}><ExpForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
