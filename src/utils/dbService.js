@@ -264,6 +264,73 @@ export const stockMasterService = {
   async delete(id) { return deleteDoc(doc(db, 'stockmaster', id)); }
 };
 
+// ─── SYMBOL MAPPING (broker raw name → Google/Stock Master symbol) ──────────
+// Each record: { userId, broker, brokerSymbol, googleSymbol, createdAt, updatedAt }
+// Key: broker + brokerSymbol  (e.g. "Mstock" + "NIPPONAMC - NETFPHAR")
+// Usage: ContractUploader loads all mappings on mount; when a PDF is parsed,
+//        each trade's securityName is looked up here to auto-fill googleSymbol.
+//        When the user manually fixes a symbol, upsert() is called to persist it.
+export const symbolMappingService = {
+  async getAll() {
+    const q = query(collection(db, 'symbolMappings'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+
+  // Build a quick-lookup Map: "broker:brokerSymbol" → googleSymbol
+  async getMapForBroker(broker) {
+    const q = query(
+      collection(db, 'symbolMappings'),
+      where('userId', '==', uid()),
+      where('broker', '==', broker)
+    );
+    const snap = await getDocs(q);
+    const map = {};
+    snap.docs.forEach(d => {
+      const { brokerSymbol, googleSymbol } = d.data();
+      map[brokerSymbol] = googleSymbol;
+    });
+    return map;
+  },
+
+  // Build a full lookup Map across all brokers: "broker::brokerSymbol" → googleSymbol
+  async getAllAsMap() {
+    const all = await this.getAll();
+    const map = {};
+    all.forEach(({ broker, brokerSymbol, googleSymbol }) => {
+      map[`${broker}::${brokerSymbol}`] = googleSymbol;
+    });
+    return map;
+  },
+
+  // Create or update a mapping for broker+brokerSymbol
+  async upsert(broker, brokerSymbol, googleSymbol) {
+    if (!broker || !brokerSymbol || !googleSymbol) return;
+    const q = query(
+      collection(db, 'symbolMappings'),
+      where('userId', '==', uid()),
+      where('broker', '==', broker),
+      where('brokerSymbol', '==', brokerSymbol)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      return updateDoc(doc(db, 'symbolMappings', snap.docs[0].id), {
+        googleSymbol,
+        updatedAt: Timestamp.now(),
+      });
+    }
+    return addDoc(collection(db, 'symbolMappings'), {
+      broker,
+      brokerSymbol,
+      googleSymbol,
+      userId: uid(),
+      createdAt: Timestamp.now(),
+    });
+  },
+
+  async delete(id) { return deleteDoc(doc(db, 'symbolMappings', id)); },
+};
+
 // ─── LOAN PAYMENTS ────────────────────────────────────────
 export const loanPaymentService = {
   async getAll(loanId) {

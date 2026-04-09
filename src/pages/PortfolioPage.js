@@ -7,6 +7,10 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis
 import toast from 'react-hot-toast';
 import { db, auth } from '../utils/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
+import ContractUploader, { SOURCES } from './ContractUploader';
+
+// Broker sources supported by ContractUploader
+//const SOURCES = ['Mstock', 'Aionion'];
 
 // ─── Symbol Dropdown ───────────────────────────────────────
 function SymbolDropdown({ stocks, value, onChange, onSelect }) {
@@ -653,7 +657,7 @@ function HoldingSymbolPicker({ symbols, selected, onSelect }) {
 }
 
 // ─── Dividend Tab ──────────────────────────────────────────
-function DividendTab({ items, stocks }) {
+function DividendTab({ items, stocks, banks }) {
   const [dividends, setDividends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
@@ -666,7 +670,8 @@ function DividendTab({ items, stocks }) {
   const [subTab, setSubTab] = useState('history');
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [expandedSymbols, setExpandedSymbols] = useState(new Set());
-  const [form, setForm] = useState({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' });
+  const defaultDivBank = banks?.find(b => b.name.toLowerCase().includes('idfc'))?.name || banks?.[0]?.name || '';
+  const [form, setForm] = useState({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank });
 
   const now = new Date();
   const curFY = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
@@ -748,7 +753,7 @@ function DividendTab({ items, stocks }) {
       if (edit) { await dividendService.update(edit.id, data); toast.success('Updated!'); }
       else { await dividendService.create(data); toast.success('Added!'); }
       setModal(false); setEdit(null);
-      setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' });
+      setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank });
       loadDividends();
     } catch { toast.error('Failed'); }
   };
@@ -912,7 +917,7 @@ function DividendTab({ items, stocks }) {
             {importing ? <><span className="spin" style={{ width: 11, height: 11, borderWidth: 2 }} /> {importProgress.total > 0 ? `${importProgress.current}/${importProgress.total}` : 'Importing...'}</> : '⬆️ Import'}
             <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
           </label>
-          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '' }); setModal(true); }}>+ Add</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank }); setModal(true); }}>+ Add</button>
         </div>
       </div>
 
@@ -968,6 +973,7 @@ function DividendTab({ items, stocks }) {
                       { key: null,     label: 'Div/Share',  align: 'right' },
                       { key: 'total',  label: 'Total',      align: 'right' },
                       { key: null,     label: 'Notes',      align: 'left'  },
+                      { key: null,     label: 'Bank',       align: 'left'  },
                       { key: null,     label: 'Actions',    align: 'left'  },
                     ].map((col, ci) => (
                       <th key={ci} style={{ textAlign: col.align, cursor: col.key ? 'pointer' : 'default', userSelect: 'none', whiteSpace: 'nowrap' }}
@@ -994,6 +1000,7 @@ function DividendTab({ items, stocks }) {
                       <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(d.dividendPerShare)}</td>
                       <td style={{ textAlign: 'right' }}><span className="amt amt-g fw-700">{fmt(d.totalAmount)}</span></td>
                       <td className="text-muted fs-12">{d.notes || '—'}</td>
+                      <td className="fs-12">{d.bankAccount ? <span style={{ background: 'rgba(34,197,94,.1)', color: 'var(--green)', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🏦 {d.bankAccount}</span> : <span className="text-muted">—</span>}</td>
                       <td><div className="actions">
                         <button className="btn-icon" onClick={() => {
                           setEdit(d);
@@ -1062,6 +1069,7 @@ function DividendTab({ items, stocks }) {
                             <td></td>
                             <td className="text-muted fs-11" style={{ paddingLeft: 20 }}>↳ {fmtDate(d.date)}</td>
                             <td className="text-muted fs-12">{d.notes || '—'}</td>
+                      <td className="fs-12">{d.bankAccount ? <span style={{ background: 'rgba(34,197,94,.1)', color: 'var(--green)', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🏦 {d.bankAccount}</span> : <span className="text-muted">—</span>}</td>
                             <td colSpan={allFYs.length} style={{ textAlign: 'right' }}>
                               <span className="text-muted fs-11">{d.shares} × {fmt(d.dividendPerShare)}</span>
                             </td>
@@ -1094,6 +1102,19 @@ function DividendTab({ items, stocks }) {
           <div className="frow"><div className="fg"><label className="fl">Symbol</label><input className="fi" name="symbol" value={form.symbol} onChange={ch} placeholder="e.g. TCS" style={{ fontFamily: 'monospace', fontWeight: 700 }} /></div><div className="fg"><label className="fl">Stock Name</label><input className="fi" name="stockName" value={form.stockName} onChange={ch} placeholder="Auto-filled" /></div></div>
           <div className="frow"><div className="fg"><label className="fl">No. of Shares</label><input className="fi" type="number" name="shares" value={form.shares} onChange={e => handleSharesOrDPS('shares', e.target.value)} placeholder="e.g. 100" /></div><div className="fg"><label className="fl">Dividend/Share (Rs)</label><input className="fi" type="number" name="dividendPerShare" value={form.dividendPerShare} onChange={e => handleSharesOrDPS('dividendPerShare', e.target.value)} step="0.01" required /></div></div>
           <div className="fg"><label className="fl">Total Amount (Rs) <span style={{ color: 'var(--green)', fontSize: 11 }}>auto-calc</span></label><div style={{ position: 'relative' }}><span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span><input className="fi" type="number" name="totalAmount" value={form.totalAmount} onChange={ch} style={{ paddingLeft: 28, fontWeight: 700 }} /></div>{form.shares && form.dividendPerShare && <div className="fs-11 amt-g mt-1">= {form.shares} × Rs {form.dividendPerShare} = Rs {(parseFloat(form.shares) * parseFloat(form.dividendPerShare)).toFixed(2)}</div>}</div>
+          {banks && banks.length > 0 && (
+            <div className="fg">
+              <label className="fl">Credit to Bank Account <span className="text-muted fs-11">(dividend received in)</span></label>
+              <select className="fs" name="bankAccount" value={form.bankAccount || defaultDivBank} onChange={ch}>
+                {banks.map(b => <option key={b.id} value={b.name}>{b.icon || '🏦'} {b.name}</option>)}
+              </select>
+              {form.bankAccount && (
+                <div style={{ marginTop: 5, background: 'rgba(34,197,94,.08)', border: '1px solid rgba(34,197,94,.2)', borderRadius: 8, padding: '7px 12px', fontSize: 12, color: 'var(--green)', fontWeight: 700 }}>
+                  💵 Dividend will be credited to <strong>{form.bankAccount}</strong>
+                </div>
+              )}
+            </div>
+          )}
           <div className="fg"><label className="fl">Notes</label><input className="fi" name="notes" value={form.notes} onChange={ch} placeholder="e.g. Q3 FY25 interim dividend" /></div>
           <div className="modal-foot"><button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button><button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add'}</button></div>
         </Modal>
@@ -1447,6 +1468,7 @@ function LockedScreen({ page, onUnlock }) {
 // ─── Main Portfolio Page ───────────────────────────────────
 export default function PortfolioPage() {
   const [unlocked, setUnlocked] = useState(() => !pinService.getCached('portfolio'));
+  const [contractsUnlocked, setContractsUnlocked] = useState(() => !pinService.getCached('contracts'));
   const [items, setItems] = useState([]);
   const [stocks, setStocks] = useState([]);
   const [brokers, setBrokers] = useState([]);
@@ -1578,8 +1600,45 @@ export default function PortfolioPage() {
   };
   const del = async () => { try { await investmentService.delete(delId); toast.success('Deleted'); setDelId(null); reloadItems(); } catch { toast.error('Failed'); } };
 
+  // ── Save contract trades → holdings ──
+  const handleContractTrades = async (buyTrades) => {
+    try {
+      for (const t of buyTrades) {
+        let purchaseDate = today();
+        if (t.tradeDate) {
+          const parts = t.tradeDate.split(/[\/\-]/);
+          if (parts.length === 3) {
+            purchaseDate = parts[2].length === 4
+              ? `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`
+              : t.tradeDate;
+          }
+        }
+        // Prefer the Google/Stock-Master symbol the user mapped; fall back to the raw broker symbol
+        const resolvedSymbol = (t.googleSymbol || t.symbol || '').toUpperCase().trim();
+        // Look up the human-readable name from Stock Master; fall back to securityName then symbol
+        const masterStock = stocks.find(s => s.symbol === resolvedSymbol);
+        const resolvedName = masterStock?.name || t.securityName || resolvedSymbol;
+        await investmentService.create({
+          symbol:        resolvedSymbol,
+          stockName:     resolvedName,
+          quantity:      t.qty,
+          purchasePrice: t.rate,
+          currentPrice:  t.rate,
+          purchaseDate,
+          brokerName:    t.source || '',
+          brokerage:     t.brokerage || 0,
+        });
+      }
+      await reloadItems();      // wait for fresh data
+      setTab('holdings');       // auto-navigate so user can see new records
+      toast.success(`✅ ${buyTrades.length} trade${buyTrades.length > 1 ? 's' : ''} added to Holdings!`);
+    } catch (err) {
+      toast.error('Failed to add to holdings: ' + err.message);
+    }
+  };
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const [showImportPanel, setShowImportPanel] = useState(false);
 
   const handleCSVImport = async e => {
     const file = e.target.files[0]; if (!file) return;
@@ -1671,15 +1730,75 @@ export default function PortfolioPage() {
         </div>
       )}
 
+      {/* ── Page Header ── */}
+      <style>{`
+        /* Import/Export toggle: hidden on desktop, visible on mobile */
+        .pf-import-toggle { display: none !important; }
+        /* Import/Export panel: always visible on desktop */
+        .pf-import-panel  { display: flex !important; gap: 8px; align-items: center; }
+
+        @media (max-width: 600px) {
+          .pf-import-toggle {
+            display: inline-flex !important;
+            align-items: center;
+            gap: 6px;
+          }
+          .pf-import-panel {
+            display: ${showImportPanel ? 'flex' : 'none'} !important;
+            flex-wrap: wrap;
+            gap: 8px;
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg2);
+            border: 1px solid var(--border2);
+            border-radius: 10px;
+            margin-top: 4px;
+          }
+        }
+
+        /* Contracts tab: full-width scrollable on mobile */
+        @media (max-width: 600px) {
+          .contracts-card {
+            min-height: unset !important;
+            overflow: visible !important;
+          }
+        }
+      `}</style>
+
       <div className="page-head">
-        <div><div className="page-title">📈 Stock Portfolio</div><div className="page-sub">{items.length} stocks</div></div>
-        <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
-          <label className="btn btn-secondary btn-sm" style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1 }}>
-            {importing ? <><span className="spin" style={{ width: 11, height: 11, borderWidth: 2 }} /> Importing...</> : '⬆️ Import CSV'}
-            <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
-          </label>
-          <button className="btn btn-secondary btn-sm" onClick={() => exportCSV(items.map(i => ({ stockName: i.stockName, symbol: i.symbol, quantity: i.quantity, purchasePrice: i.purchasePrice, currentPrice: i.currentPrice || i.purchasePrice, brokerName: i.brokerName || '', brokerage: i.brokerage || 0, totalInvested: i.totalInvested, currentValue: i.currentValue, profitLoss: i.profitLoss, allocation: i.allocation + '%' })), 'portfolio.csv')}>⬇️ Export</button>
-          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>+ Add Stock</button>
+        <div>
+          <div className="page-title">📈 Stock Portfolio</div>
+          <div className="page-sub">{items.length} stocks</div>
+        </div>
+        <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
+
+          {/* Mobile-only arrow toggle button */}
+          <button
+            className="btn btn-secondary btn-sm pf-import-toggle"
+            onClick={() => setShowImportPanel(v => !v)}
+            title="Import / Export"
+          >
+            Import / Export
+            <span style={{ fontSize: 10, marginLeft: 2 }}>{showImportPanel ? '▲' : '▼'}</span>
+          </button>
+
+          {/* Import + Export — collapses on mobile */}
+          <div className="pf-import-panel">
+            <label className="btn btn-secondary btn-sm" style={{ cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1 }}>
+              {importing
+                ? <><span className="spin" style={{ width: 11, height: 11, borderWidth: 2 }} /> Importing…</>
+                : '⬆️ Import CSV'}
+              <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
+            </label>
+            <button className="btn btn-secondary btn-sm"
+              onClick={() => exportCSV(items.map(i => ({ stockName: i.stockName, symbol: i.symbol, quantity: i.quantity, purchasePrice: i.purchasePrice, currentPrice: i.currentPrice || i.purchasePrice, brokerName: i.brokerName || '', brokerage: i.brokerage || 0, totalInvested: i.totalInvested, currentValue: i.currentValue, profitLoss: i.profitLoss, allocation: i.allocation + '%' })), 'portfolio.csv')}>
+              ⬇️ Export
+            </button>
+          </div>
+
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setModal(true); }}>
+            + Add Stock
+          </button>
         </div>
       </div>
 
@@ -1742,7 +1861,7 @@ export default function PortfolioPage() {
 
       {/* Tabs */}
       <div style={{ borderBottom: '1px solid var(--border)', overflowX: 'auto', display: 'flex', gap: 2, marginTop: 16, marginBottom: 16, WebkitOverflowScrolling: 'touch' }}>
-        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }].map(t => (
+        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }, { key: 'contracts', label: '📄 Contracts' }].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 12px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
@@ -1910,7 +2029,17 @@ export default function PortfolioPage() {
 
       {tab === 'analysis' && <PriceAnalysisTab items={itemsWithAlloc} />}
       {tab === 'broker' && <BrokerReportTab items={itemsWithAlloc} brokers={brokers} />}
-      {tab === 'dividends' && <DividendTab items={itemsWithAlloc} stocks={stocks} />}
+      {tab === 'dividends' && <DividendTab items={itemsWithAlloc} stocks={stocks} banks={banks} />}
+      {tab === 'contracts' && (
+        contractsUnlocked
+          ? (
+            <div className="card contracts-card" style={{ padding: 0, overflow: 'visible', minHeight: 'min(520px, 80vh)', overflowX: 'hidden' }}>
+              <ContractUploader onTradesSaved={handleContractTrades} />
+            </div>
+          ) : (
+            <LockedScreen page="contracts" onUnlock={() => setContractsUnlocked(true)} />
+          )
+      )}
 
       {modal && <Modal title={edit ? '✏️ Edit Stock' : '➕ Add Stock'} onClose={() => { setModal(false); setEdit(null); }}>
         <InvForm item={edit} stocks={stocks} brokers={brokers} banks={banks} onSave={save} onSaveAndAnother={saveAndAnother} onClose={() => { setModal(false); setEdit(null); }} />

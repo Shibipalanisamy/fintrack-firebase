@@ -3,7 +3,7 @@ import { netWorthService, goldService, investmentService, incomeService, expense
 import { fmt, fmtDate, fmtDateInput, today } from '../utils/helpers';
 import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import { differenceInDays } from 'date-fns';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
 import toast from 'react-hot-toast';
 
 import { pinService } from '../utils/dbService';
@@ -253,7 +253,7 @@ function PropertyCalc() {
                         <td><span style={{ background: 'var(--bg3)', borderRadius: 20, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>{ptype.icon} {ptype.label}</span></td>
                         <td style={{ textAlign: 'right' }}><span className="amt">{fmt(parseFloat(e.investedAmount))}</span></td>
                         <td className="font-mono fs-12 text-muted">{e.investedDate}</td>
-                        <td style={{ textAlign: 'right' }} className="fs-12 fw-700" style={{ color: 'var(--purple)', textAlign: 'right' }}>{e.expectedReturn}%</td>
+                        <td style={{ color: 'var(--purple)', textAlign: 'right' }} className="fs-12 fw-700">{e.expectedReturn}%</td>
                         <td style={{ textAlign: 'right' }} className="fs-12 text-muted">{c.years.toFixed(1)}y</td>
                         <td style={{ textAlign: 'right' }}><span className="fw-800" style={{ color: 'var(--green)', fontSize: 13 }}>{fmt(c.netValue)}</span></td>
                         <td style={{ textAlign: 'right' }}><span className={`fw-700 fs-12 ${c.gain >= 0 ? 'amt-g' : 'amt-r'}`}>{c.gain >= 0 ? '+' : ''}{fmt(c.gain)}</span></td>
@@ -343,65 +343,395 @@ function PropertyCalc() {
 }
 
 // ─── Gold Tracker ──────────────────────────────────────────
+// 🔑 goldapi.io API key — get yours free at https://www.goldapi.io
+const GOLD_API_KEY = 'goldapi-REPLACE_WITH_YOUR_KEY'; // ← paste your key here
+
 function GoldTracker() {
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [currentRate, setCurrentRate] = useState('');
-  const [modal, setModal] = useState(false);
-  const [edit, setEdit] = useState(null);
-  const [delId, setDelId] = useState(null);
-  const [form, setForm] = useState({ purchaseDate: today(), grams: '', purchasePrice: '', description: '' });
+  const [entries, setEntries]         = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [currentRate, setCurrentRate] = useState(() => localStorage.getItem('fintrack_gold_rate') || '');
+  const [rateLoading, setRateLoading] = useState(false);
+  const [rateSource, setRateSource]   = useState(localStorage.getItem('fintrack_gold_rate_source') || '');
+  const [rateTime, setRateTime]       = useState(localStorage.getItem('fintrack_gold_rate_time') || '');
+  const [modal, setModal]             = useState(false);
+  const [edit, setEdit]               = useState(null);
+  const [delId, setDelId]             = useState(null);
+  const [form, setForm]               = useState({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' });
+
   useEffect(() => { load(); }, []);
-  const load = async () => { setLoading(true); try { setEntries(await goldService.getAll()); } catch { toast.error('Failed'); } finally { setLoading(false); } };
+
+  // ── Persist manual rate change ─────────────────────────
+  const handleRateChange = (val) => {
+    setCurrentRate(val);
+    setRateSource('manual');
+    localStorage.setItem('fintrack_gold_rate', val);
+    localStorage.setItem('fintrack_gold_rate_source', 'manual');
+    localStorage.setItem('fintrack_gold_rate_time', new Date().toLocaleTimeString('en-IN'));
+  };
+
+  // ── Fetch live rate from goldapi.io ────────────────────
+  const fetchLiveRate = async () => {
+    setRateLoading(true);
+    try {
+      const res = await fetch('https://www.goldapi.io/api/XAU/INR', {
+        headers: {
+          'x-access-token': GOLD_API_KEY,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      // goldapi returns price per troy oz — convert to per gram (1 troy oz = 31.1035 g)
+      const pricePerOz  = parseFloat(data.price) || 0;
+      const pricePerGram = parseFloat((pricePerOz / 31.1035).toFixed(2));
+      if (!pricePerGram || pricePerGram <= 0) throw new Error('Invalid price from API');
+
+      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      setCurrentRate(String(pricePerGram));
+      setRateSource('live');
+      setRateTime(timeStr);
+      localStorage.setItem('fintrack_gold_rate', String(pricePerGram));
+      localStorage.setItem('fintrack_gold_rate_source', 'live');
+      localStorage.setItem('fintrack_gold_rate_time', timeStr);
+      toast.success(`🥇 Live rate: ₹${pricePerGram.toLocaleString('en-IN')}/g`);
+    } catch (e) {
+      console.error('Gold API error:', e);
+      toast.error(`Live rate failed: ${e.message}. Enter manually.`);
+    } finally {
+      setRateLoading(false);
+    }
+  };
+
+  const load = async () => {
+    setLoading(true);
+    try { setEntries(await goldService.getAll()); }
+    catch { toast.error('Failed to load gold entries'); }
+    finally { setLoading(false); }
+  };
+
   const save = async () => {
     if (!form.grams || !form.purchasePrice) { toast.error('Fill all fields'); return; }
     try {
-      if (edit) { await goldService.update(edit.id, { ...form, grams: parseFloat(form.grams), purchasePrice: parseFloat(form.purchasePrice) }); toast.success('Updated!'); }
-      else { await goldService.create({ ...form, grams: parseFloat(form.grams), purchasePrice: parseFloat(form.purchasePrice) }); toast.success('Added!'); }
-      setModal(false); setEdit(null); setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '' }); load();
-    } catch { toast.error('Failed'); }
+      const payload = {
+        ...form,
+        grams: parseFloat(form.grams),
+        purchasePrice: parseFloat(form.purchasePrice),
+        gst: parseFloat(form.gst) || 0,
+        wastage: parseFloat(form.wastage) || 0,
+      };
+      if (edit) {
+        await goldService.update(edit.id, payload);
+        toast.success('Updated!');
+      } else {
+        await goldService.create(payload);
+        toast.success('Added!');
+      }
+      setModal(false); setEdit(null);
+      setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' });
+      load();
+    } catch { toast.error('Failed to save'); }
   };
-  const del = async () => { try { await goldService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
-  const curRate = parseFloat(currentRate) || 0;
-  const totalGrams = entries.reduce((s, e) => s + e.grams, 0);
-  const totalInvested = entries.reduce((s, e) => s + e.grams * e.purchasePrice, 0);
-  const totalCurrentValue = curRate > 0 ? totalGrams * curRate : 0;
+
+  const del = async () => {
+    try { await goldService.delete(delId); toast.success('Deleted'); setDelId(null); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  // ✅ Fix 2: Safe date parser — handles Firestore Timestamp, string, or Date object
+  const safeDate = (val) => {
+    if (!val) return new Date();
+    if (val?.toDate) return val.toDate();           // Firestore Timestamp
+    if (val instanceof Date) return val;            // already a Date
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? new Date() : d;     // string fallback
+  };
+
+  const curRate        = parseFloat(currentRate) || 0;
+  const totalGrams     = entries.reduce((s, e) => s + (parseFloat(e.grams) || 0), 0);
+
+  // Total cost = base + GST (what you actually paid)
+  const totalInvested  = entries.reduce((s, e) => {
+    const base = (parseFloat(e.grams) || 0) * (parseFloat(e.purchasePrice) || 0);
+    const gst  = base * ((parseFloat(e.gst) || 0) / 100);
+    return s + base + gst;
+  }, 0);
+
+  // Current value uses net grams after wastage deduction
+  const totalCurrentValue = curRate > 0
+    ? entries.reduce((s, e) => {
+        const netGrams = (parseFloat(e.grams) || 0) * (1 - (parseFloat(e.wastage) || 0) / 100);
+        return s + netGrams * curRate;
+      }, 0)
+    : 0;
+
   const totalGain = totalCurrentValue - totalInvested;
+
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-1">
         <div className="card-title" style={{ marginBottom: 0 }}>🥇 Gold Investment Tracker</div>
-        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '' }); setModal(true); }}>+ Add</button>
+        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' }); setModal(true); }}>+ Add</button>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.25)', borderRadius: 10, padding: '10px 14px', marginBottom: 14, marginTop: 10 }}>
-        <span style={{ fontSize: 18 }}>🥇</span>
-        <div style={{ flex: 1 }}><div className="fs-12 fw-700" style={{ color: '#fbbf24' }}>Today's Gold Rate (per gram)</div><div className="fs-11 text-muted">Enter current 24K rate to see live value</div></div>
-        <div className="flex items-center gap-1"><span className="text-muted fs-13">Rs</span><input style={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, padding: '6px 10px', color: 'var(--text)', fontSize: 14, fontWeight: 700, width: 110, outline: 'none' }} type="number" value={currentRate} onChange={e => setCurrentRate(e.target.value)} placeholder="e.g. 9200" /></div>
+
+      {/* Gold Rate Panel */}
+      <div style={{ background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.25)', borderRadius: 10, padding: '12px 14px', marginBottom: 14, marginTop: 10 }}>
+        <div className="flex items-center justify-between mb-2" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <div className="flex items-center gap-2">
+            <span style={{ fontSize: 18 }}>🥇</span>
+            <div>
+              <div className="fs-12 fw-700" style={{ color: '#fbbf24' }}>Today's Gold Rate (per gram · 24K)</div>
+              <div className="fs-11 text-muted">
+                {rateSource === 'live'
+                  ? `✅ Live rate fetched at ${rateTime}`
+                  : rateSource === 'manual'
+                    ? `✏️ Manually entered at ${rateTime}`
+                    : 'Fetch live rate or enter manually'}
+              </div>
+            </div>
+          </div>
+          {/* Live fetch button */}
+          <button
+            onClick={fetchLiveRate}
+            disabled={rateLoading}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, border: '1.5px solid rgba(251,191,36,.5)', background: 'rgba(251,191,36,.15)', color: '#fbbf24', fontWeight: 700, fontSize: 12, cursor: rateLoading ? 'not-allowed' : 'pointer', opacity: rateLoading ? 0.7 : 1 }}>
+            {rateLoading
+              ? <><span className="spin" style={{ width: 12, height: 12, borderWidth: 2, borderColor: '#fbbf24', borderTopColor: 'transparent' }} /> Fetching…</>
+              : '🔄 Fetch Live Rate'}
+          </button>
+        </div>
+        {/* Manual input */}
+        <div className="flex items-center gap-2">
+          <span className="text-muted fs-12 fw-600">₹</span>
+          <input
+            style={{ background: 'var(--bg3)', border: `1.5px solid ${currentRate ? 'rgba(251,191,36,.4)' : 'var(--border2)'}`, borderRadius: 8, padding: '7px 10px', color: 'var(--text)', fontSize: 15, fontWeight: 800, width: 130, outline: 'none' }}
+            type="number"
+            value={currentRate}
+            onChange={e => handleRateChange(e.target.value)}
+            placeholder="e.g. 9200"
+          />
+          <span className="fs-12 text-muted">per gram</span>
+          {currentRate && (
+            <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#fbbf24' }}>
+              = ₹{(parseFloat(currentRate) * 10).toLocaleString('en-IN')} / 10g
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* Summary stats */}
       {entries.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
-          {[{ label: 'Total Gold', val: `${totalGrams.toFixed(3)} g`, c: '#fbbf24', icon: '⚖️' }, { label: 'Total Invested', val: fmt(totalInvested), c: 'var(--blue)', icon: '💰' }, { label: 'Current Value', val: curRate > 0 ? fmt(totalCurrentValue) : '—', c: 'var(--green)', icon: '📈' }, { label: 'Gain / Loss', val: curRate > 0 ? `${totalGain >= 0 ? '+' : ''}${fmt(totalGain)}` : '—', c: totalGain >= 0 ? 'var(--green)' : 'var(--red)', icon: totalGain >= 0 ? '📈' : '📉' }].map((s, i) => (
-            <div key={i} style={{ background: 'var(--bg3)', borderRadius: 8, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}><div className="fs-11 text-muted mb-1">{s.icon} {s.label}</div><div style={{ fontWeight: 800, color: s.c, fontSize: 13 }}>{s.val}</div></div>
+          {[
+            { label: 'Total Gold',      val: `${totalGrams.toFixed(3)} g`,                                           c: '#fbbf24',       icon: '⚖️' },
+            { label: 'Total Invested',  val: fmt(totalInvested),                                                     c: 'var(--blue)',   icon: '💰' },
+            { label: 'Current Value',   val: curRate > 0 ? fmt(totalCurrentValue) : '—',                            c: 'var(--green)',  icon: '📈' },
+            { label: 'Gain / Loss',     val: curRate > 0 ? `${totalGain >= 0 ? '+' : ''}${fmt(totalGain)}` : '—',   c: totalGain >= 0 ? 'var(--green)' : 'var(--red)', icon: totalGain >= 0 ? '📈' : '📉' },
+          ].map((s, i) => (
+            <div key={i} style={{ background: 'var(--bg3)', borderRadius: 8, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
+              <div className="fs-11 text-muted mb-1">{s.icon} {s.label}</div>
+              <div style={{ fontWeight: 800, color: s.c, fontSize: 13 }}>{s.val}</div>
+            </div>
           ))}
         </div>
       )}
-      {loading ? <div className="spin-center" style={{ height: 60 }}><div className="spin" /></div>
+
+      {/* Table */}
+      {loading
+        ? <div className="spin-center" style={{ height: 60 }}><div className="spin" /></div>
         : entries.length === 0
-          ? <div className="empty" style={{ padding: '20px 0' }}><div className="empty-icon">🥇</div><div className="empty-title">No gold entries</div></div>
-          : <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Date</th><th>Description</th><th style={{ textAlign: 'right' }}>Grams</th><th style={{ textAlign: 'right' }}>Buy Rate/g</th><th style={{ textAlign: 'right' }}>Invested</th><th style={{ textAlign: 'right' }}>Current Value</th><th style={{ textAlign: 'right' }}>Gain/Loss</th><th>Actions</th></tr></thead>
-            <tbody>{entries.map(e => {
-              const invested = e.grams * e.purchasePrice, curVal = curRate > 0 ? e.grams * curRate : null, gain = curVal !== null ? curVal - invested : null;
-              return (<tr key={e.id}><td><div className="font-mono fs-12 text-muted">{fmtDate(e.purchaseDate)}</div><div className="fs-11 text-muted">{differenceInDays(new Date(), new Date(e.purchaseDate))} days ago</div></td><td className="fw-600 fs-13">{e.description || '—'}</td><td style={{ textAlign: 'right' }} className="fw-700">{e.grams.toFixed(3)} g</td><td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(e.purchasePrice)}</td><td style={{ textAlign: 'right' }}><span className="amt">{fmt(invested)}</span></td><td style={{ textAlign: 'right' }}>{curVal !== null ? <span className="amt amt-g">{fmt(curVal)}</span> : <span className="text-muted fs-12">Enter rate</span>}</td><td style={{ textAlign: 'right' }}>{gain !== null ? <span className={`amt ${gain >= 0 ? 'amt-g' : 'amt-r'}`}>{gain >= 0 ? '+' : ''}{fmt(gain)}</span> : '—'}</td><td><div className="actions"><button className="btn-icon" onClick={() => { setEdit(e); setForm({ purchaseDate: fmtDateInput(e.purchaseDate), grams: e.grams, purchasePrice: e.purchasePrice, description: e.description || '' }); setModal(true); }}>✏️</button><button className="btn-icon" onClick={() => setDelId(e.id)}>🗑️</button></div></td></tr>);
-            })}</tbody>
-          </table></div>}
-      {modal && <Modal title={edit ? '✏️ Edit Gold Entry' : '🥇 Add Gold Purchase'} onClose={() => { setModal(false); setEdit(null); }}>
-        <div className="fg"><label className="fl">Purchase Date</label><DateStepper name="purchaseDate" value={form.purchaseDate} onChange={e => setForm(p => ({ ...p, purchaseDate: e.target.value }))} /></div>
-        <div className="frow"><div className="fg"><label className="fl">Weight (grams)</label><input className="fi" type="number" value={form.grams} onChange={e => setForm(p => ({ ...p, grams: e.target.value }))} step="0.001" min="0" /></div><div className="fg"><label className="fl">Buy Price per gram (Rs)</label><input className="fi" type="number" value={form.purchasePrice} onChange={e => setForm(p => ({ ...p, purchasePrice: e.target.value }))} min="0" /></div></div>
-        {form.grams && form.purchasePrice && <div style={{ background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.2)', borderRadius: 8, padding: '8px 14px', marginBottom: 12, fontSize: 13 }}><span className="text-muted">Total: </span><span className="fw-800" style={{ color: '#fbbf24' }}>{fmt(parseFloat(form.grams) * parseFloat(form.purchasePrice))}</span></div>}
-        <div className="fg"><label className="fl">Description (optional)</label><input className="fi" type="text" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="e.g. 22K chain, Coin..." /></div>
-        <div className="modal-foot"><button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button><button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add Gold'}</button></div>
-      </Modal>}
+          ? <div className="empty" style={{ padding: '20px 0' }}><div className="empty-icon">🥇</div><div className="empty-title">No gold entries</div><div className="empty-sub">Add your gold purchases to track their current value</div></div>
+          : (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Description</th>
+                    <th style={{ textAlign: 'right' }}>Grams</th>
+                    <th style={{ textAlign: 'right' }}>Buy Rate/g</th>
+                    <th style={{ textAlign: 'right' }}>GST</th>
+                    <th style={{ textAlign: 'right' }}>Wastage</th>
+                    <th style={{ textAlign: 'right' }}>Total Cost</th>
+                    <th style={{ textAlign: 'right' }}>Net Value Today</th>
+                    <th style={{ textAlign: 'right' }}>Gain/Loss</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map(e => {
+                    const dateObj      = safeDate(e.purchaseDate);
+                    const daysAgo      = differenceInDays(new Date(), dateObj);
+                    const grams        = parseFloat(e.grams) || 0;
+                    const buyRate      = parseFloat(e.purchasePrice) || 0;
+                    const gstPct       = parseFloat(e.gst) || 0;       // e.g. 3 means 3%
+                    const wastagePct   = parseFloat(e.wastage) || 0;   // e.g. 8 means 8%
+
+                    // Total cost = (grams × rate) + GST on base cost
+                    const baseCost     = grams * buyRate;
+                    const gstAmt       = baseCost * (gstPct / 100);
+                    const totalCost    = baseCost + gstAmt;             // what you paid
+
+                    // Net sellable grams = grams reduced by wastage%
+                    const netGrams     = grams * (1 - wastagePct / 100);
+                    const curVal       = curRate > 0 ? netGrams * curRate : null;  // value after wastage
+                    const gain         = curVal !== null ? curVal - totalCost : null;
+
+                    return (
+                      <tr key={e.id}>
+                        <td>
+                          <div className="font-mono fs-12 text-muted">{fmtDate(dateObj)}</div>
+                          <div className="fs-11 text-muted">{daysAgo >= 0 ? `${daysAgo}d ago` : '—'}</div>
+                        </td>
+                        <td className="fw-600 fs-13">{e.description || '—'}</td>
+                        <td style={{ textAlign: 'right' }} className="fw-700">{grams.toFixed(3)} g</td>
+                        <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(buyRate)}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          <span className="fs-12 text-muted">{gstPct > 0 ? `${gstPct}%` : '—'}</span>
+                          {gstAmt > 0 && <div className="fs-11 text-muted">+{fmt(gstAmt)}</div>}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <span className="fs-12 text-muted">{wastagePct > 0 ? `${wastagePct}%` : '—'}</span>
+                          {wastagePct > 0 && <div className="fs-11 text-muted">{netGrams.toFixed(3)} g net</div>}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <span className="amt fw-700">{fmt(totalCost)}</span>
+                          {gstAmt > 0 && <div className="fs-11 text-muted">incl. GST</div>}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {curVal !== null
+                            ? <>
+                                <span className="amt amt-g fw-700">{fmt(curVal)}</span>
+                                {wastagePct > 0 && <div className="fs-11 text-muted">after wastage</div>}
+                              </>
+                            : <span className="text-muted fs-12">Enter rate ↑</span>}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {gain !== null
+                            ? <span className={`amt fw-700 ${gain >= 0 ? 'amt-g' : 'amt-r'}`}>{gain >= 0 ? '+' : ''}{fmt(gain)}</span>
+                            : '—'}
+                        </td>
+                        <td>
+                          <div className="actions">
+                            <button className="btn-icon" onClick={() => {
+                              setEdit(e);
+                              setForm({
+                                purchaseDate: fmtDateInput(dateObj),
+                                grams: e.grams,
+                                purchasePrice: e.purchasePrice,
+                                description: e.description || '',
+                                gst: e.gst ?? '3',
+                                wastage: e.wastage ?? '',
+                              });
+                              setModal(true);
+                            }}>✏️</button>
+                            <button className="btn-icon" onClick={() => setDelId(e.id)}>🗑️</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )
+      }
+
+      {/* Add/Edit Modal */}
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Gold Entry' : '🥇 Add Gold Purchase'} onClose={() => { setModal(false); setEdit(null); }}>
+          <div className="fg">
+            <label className="fl">Purchase Date</label>
+            <DateStepper name="purchaseDate" value={form.purchaseDate} onChange={e => setForm(p => ({ ...p, purchaseDate: e.target.value }))} />
+          </div>
+          <div className="frow">
+            <div className="fg">
+              <label className="fl">Weight (grams)</label>
+              <input className="fi" type="number" value={form.grams} onChange={e => setForm(p => ({ ...p, grams: e.target.value }))} step="0.001" min="0" placeholder="e.g. 10.000" />
+            </div>
+            <div className="fg">
+              <label className="fl">Buy Price per gram (₹)</label>
+              <input className="fi" type="number" value={form.purchasePrice} onChange={e => setForm(p => ({ ...p, purchasePrice: e.target.value }))} min="0" placeholder="e.g. 7500" />
+            </div>
+          </div>
+          <div className="frow">
+            <div className="fg">
+              <label className="fl">GST % <span className="text-muted fw-400 fs-11">(added to cost)</span></label>
+              <input className="fi" type="number" value={form.gst} onChange={e => setForm(p => ({ ...p, gst: e.target.value }))} step="0.1" min="0" max="30" placeholder="e.g. 3" />
+              <div className="fs-11 text-muted mt-1">Jewellery: 3% · Gold coin: 3%</div>
+            </div>
+            <div className="fg">
+              <label className="fl">Wastage % <span className="text-muted fw-400 fs-11">(reduces resale value)</span></label>
+              <input className="fi" type="number" value={form.wastage} onChange={e => setForm(p => ({ ...p, wastage: e.target.value }))} step="0.1" min="0" max="30" placeholder="e.g. 8" />
+              <div className="fs-11 text-muted mt-1">Jewellery: 8–12% · Coin: 0%</div>
+            </div>
+          </div>
+
+          {/* Live cost breakdown */}
+          {form.grams && form.purchasePrice && (() => {
+            const grams      = parseFloat(form.grams) || 0;
+            const rate       = parseFloat(form.purchasePrice) || 0;
+            const gstPct     = parseFloat(form.gst) || 0;
+            const wastagePct = parseFloat(form.wastage) || 0;
+            const baseCost   = grams * rate;
+            const gstAmt     = baseCost * (gstPct / 100);
+            const totalCost  = baseCost + gstAmt;
+            const netGrams   = grams * (1 - wastagePct / 100);
+            const netVal     = curRate > 0 ? netGrams * curRate : null;
+            const gain       = netVal !== null ? netVal - totalCost : null;
+            return (
+              <div style={{ background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.25)', borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+                <div className="fw-700 fs-12 mb-2" style={{ color: '#fbbf24' }}>📊 Cost Breakdown</div>
+                <div style={{ display: 'grid', gap: 6, fontSize: 12 }}>
+                  <div className="flex justify-between">
+                    <span className="text-muted">Base cost ({grams}g × ₹{fmt(rate)})</span>
+                    <span className="fw-700">{fmt(baseCost)}</span>
+                  </div>
+                  {gstPct > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">+ GST ({gstPct}%)</span>
+                      <span className="fw-700" style={{ color: 'var(--orange)' }}>+{fmt(gstAmt)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between" style={{ borderTop: '1px solid rgba(251,191,36,.2)', paddingTop: 6 }}>
+                    <span className="fw-700">Total Cost (what you paid)</span>
+                    <span className="fw-800" style={{ color: '#fbbf24' }}>{fmt(totalCost)}</span>
+                  </div>
+                  {wastagePct > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Net sellable gold (after {wastagePct}% wastage)</span>
+                      <span className="fw-600">{netGrams.toFixed(3)} g</span>
+                    </div>
+                  )}
+                  {netVal !== null && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Current resale value</span>
+                      <span className="fw-700 amt-g">{fmt(netVal)}</span>
+                    </div>
+                  )}
+                  {gain !== null && (
+                    <div className="flex justify-between" style={{ borderTop: '1px solid rgba(251,191,36,.2)', paddingTop: 6 }}>
+                      <span className="fw-700">Net Gain / Loss</span>
+                      <span className={`fw-800 ${gain >= 0 ? 'amt-g' : 'amt-r'}`}>{gain >= 0 ? '+' : ''}{fmt(gain)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="fg">
+            <label className="fl">Description (optional)</label>
+            <input className="fi" type="text" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="e.g. 22K chain, Coin, Biscuit..." />
+          </div>
+          <div className="modal-foot">
+            <button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add Gold'}</button>
+          </div>
+        </Modal>
+      )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
     </div>
   );
@@ -628,7 +958,6 @@ export default function NetWorthPage() {
   // ─── Snapshots (localStorage) ──────────────────────────
   const SNAPSHOT_KEY = 'fintrack_nw_snapshots';
   const [snapshots, setSnapshots] = useState(() => { try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || '[]'); } catch { return []; } });
-  const [showSnapshots, setShowSnapshots] = useState(false);
 
   const takeSnapshot = () => {
     const snap = { id: Date.now(), date: new Date().toISOString(), label: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), totalAssets, totalLiabilities, netWorth };
@@ -652,14 +981,15 @@ export default function NetWorthPage() {
       <div className="page-head">
         <div><div className="page-title">🏛️ Assets &amp; Liabilities</div><div className="page-sub">Track your complete financial position</div></div>
         <div className="flex gap-2">
-          {activeTab === 'networth' && <button className="btn btn-secondary" onClick={() => setShowSnapshots(s => !s)}>📸 {snapshots.length > 0 ? `${snapshots.length} Snapshots` : 'Snapshots'}</button>}
+          {activeTab === 'networth' && <button className="btn btn-secondary" onClick={() => setActiveTab('trend')}>📈 {snapshots.length > 0 ? `${snapshots.length} Snapshots` : 'View Trends'}</button>}
+          {activeTab === 'networth' && <button className="btn btn-secondary" onClick={takeSnapshot}>📸 Snap</button>}
           {activeTab === 'networth' && <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? <span className="spin" /> : null} 💾 Save</button>}
         </div>
       </div>
 
       {/* Tabs */}
       <div style={{ borderBottom: '1px solid var(--border)', overflowX: 'auto', display: 'flex', gap: 2, marginBottom: 16 }}>
-        {[{ key: 'networth', label: '💎 Net Worth' }, { key: 'allocation', label: '📊 Allocation' }, { key: 'property', label: '🏠 Investments' }, { key: 'gold', label: '🥇 Gold Tracker' }].map(t => (
+        {[{ key: 'networth', label: '💎 Net Worth' }, { key: 'trend', label: '📈 Trend & Milestones' }, { key: 'allocation', label: '📊 Allocation' }, { key: 'property', label: '🏠 Investments' }, { key: 'gold', label: '🥇 Gold Tracker' }].map(t => (
           <button key={t.key} onClick={() => setActiveTab(t.key)}
             style={{ padding: '8px 16px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: activeTab === t.key ? 'var(--bg3)' : 'transparent', color: activeTab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: activeTab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
@@ -759,65 +1089,177 @@ export default function NetWorthPage() {
             </div>
           </div>
 
-          {/* Snapshots Panel */}
-          {showSnapshots && (
-            <div className="card" style={{ marginTop: 12 }}>
-              <div className="flex justify-between items-center mb-3">
-                <div className="card-title" style={{ marginBottom: 0 }}>📸 Net Worth Snapshots <span className="text-muted fw-400 fs-12">({snapshots.length}/24 saved · stored locally)</span></div>
-                <button className="btn btn-secondary btn-sm" onClick={takeSnapshot}>+ Take Now</button>
-              </div>
-              {snapshots.length === 0
-                ? <div className="text-muted fs-13" style={{ textAlign: 'center', padding: 20 }}>No snapshots yet — click "Snap" to save today's values</div>
-                : (
-                  <>
-                    {/* Mini chart */}
-                    {snapshots.length >= 2 && (() => {
-                      const sorted = [...snapshots].reverse();
-                      const max = Math.max(...sorted.map(s => s.netWorth));
-                      const min = Math.min(...sorted.map(s => s.netWorth));
-                      const range = max - min || 1;
-                      return (
-                        <div style={{ height: 60, display: 'flex', alignItems: 'flex-end', gap: 4, marginBottom: 16, padding: '0 4px' }}>
-                          {sorted.map((s, i) => {
-                            const h = Math.max(8, ((s.netWorth - min) / range) * 50 + 10);
-                            return (
-                              <div key={s.id} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                                <div style={{ width: '100%', height: h, background: s.netWorth >= 0 ? 'var(--green)' : 'var(--red)', borderRadius: '3px 3px 0 0', opacity: 0.8 }} title={`${s.label}: ${fmt(s.netWorth)}`} />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
-                    <div className="tbl-wrap">
-                      <table className="tbl">
-                        <thead><tr><th>Date</th><th style={{ textAlign: 'right' }}>Assets</th><th style={{ textAlign: 'right' }}>Liabilities</th><th style={{ textAlign: 'right' }}>Net Worth</th><th style={{ textAlign: 'right' }}>Change</th><th></th></tr></thead>
-                        <tbody>{snapshots.map((s, i) => {
-                          const prev = snapshots[i + 1];
-                          const change = prev ? s.netWorth - prev.netWorth : null;
-                          return (
-                            <tr key={s.id}>
-                              <td className="fw-600 fs-13">{s.label}</td>
-                              <td style={{ textAlign: 'right' }} className="amt-g fs-12">{fmt(s.totalAssets)}</td>
-                              <td style={{ textAlign: 'right' }} className="amt-r fs-12">{fmt(s.totalLiabilities)}</td>
-                              <td style={{ textAlign: 'right' }}><span className="fw-800" style={{ color: s.netWorth >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(s.netWorth)}</span></td>
-                              <td style={{ textAlign: 'right' }}>
-                                {change !== null
-                                  ? <span className={`fw-700 fs-12 ${change >= 0 ? 'amt-g' : 'amt-r'}`}>{change >= 0 ? '+' : ''}{fmt(change)}</span>
-                                  : <span className="text-muted fs-12">—</span>}
-                              </td>
-                              <td><button className="btn-icon" onClick={() => deleteSnapshot(s.id)}>🗑️</button></td>
-                            </tr>
-                          );
-                        })}</tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-            </div>
-          )}
         </>
       )}
+
+      {activeTab === 'trend' && (() => {
+        const sorted = [...snapshots].reverse(); // oldest → newest
+        const chartData = sorted.map(s => ({
+          name: s.label,
+          netWorth: Math.round(s.netWorth),
+          assets: Math.round(s.totalAssets),
+          liabilities: Math.round(s.totalLiabilities),
+        }));
+
+        // Milestone badges
+        const MILESTONES = [
+          { label: '₹1 Lakh',    val: 100000,    icon: '🌱' },
+          { label: '₹5 Lakh',    val: 500000,    icon: '🌿' },
+          { label: '₹10 Lakh',   val: 1000000,   icon: '🌳' },
+          { label: '₹25 Lakh',   val: 2500000,   icon: '🏅' },
+          { label: '₹50 Lakh',   val: 5000000,   icon: '🥈' },
+          { label: '₹1 Crore',   val: 10000000,  icon: '🥇' },
+          { label: '₹2 Crore',   val: 20000000,  icon: '💎' },
+          { label: '₹5 Crore',   val: 50000000,  icon: '👑' },
+        ];
+        const achieved = MILESTONES.filter(m => netWorth >= m.val);
+        const next = MILESTONES.find(m => netWorth < m.val);
+        const nextPct = next ? Math.min(100, (netWorth / next.val) * 100) : 100;
+
+        // Growth stats from snapshots
+        const newest = snapshots[0];
+        const oldest = snapshots[snapshots.length - 1];
+        const growth = newest && oldest && oldest.netWorth !== 0
+          ? ((newest.netWorth - oldest.netWorth) / Math.abs(oldest.netWorth)) * 100
+          : null;
+        const totalGrowthAmt = newest && oldest ? newest.netWorth - oldest.netWorth : null;
+
+        return (
+          <div>
+            {/* Next milestone card */}
+            <div className="card mb-4" style={{ background: 'linear-gradient(135deg,rgba(77,158,255,.08),rgba(167,139,250,.06))', borderColor: 'rgba(77,158,255,.2)' }}>
+              <div className="flex items-center justify-between mb-3" style={{ flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <div className="fw-900 fs-16">🏆 Next Milestone</div>
+                  <div className="text-muted fs-12 mt-1">{next ? `${next.icon} ${next.label}` : '👑 All milestones achieved!'}</div>
+                </div>
+                {next && (
+                  <div style={{ textAlign: 'right' }}>
+                    <div className="fw-900 fs-20" style={{ color: 'var(--blue)' }}>{nextPct.toFixed(1)}%</div>
+                    <div className="text-muted fs-12">₹{(next.val - netWorth).toLocaleString('en-IN')} to go</div>
+                  </div>
+                )}
+              </div>
+              {next && (
+                <div style={{ background: 'var(--bg3)', borderRadius: 99, height: 12, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${nextPct}%`, background: 'linear-gradient(90deg,var(--blue),var(--purple,#a78bfa))', borderRadius: 99, transition: 'width .6s' }} />
+                </div>
+              )}
+            </div>
+
+            {/* Achieved milestones */}
+            {achieved.length > 0 && (
+              <div className="card mb-4">
+                <div className="card-title">🎖️ Achieved Milestones</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {achieved.map(m => (
+                    <div key={m.val} style={{ background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.25)', borderRadius: 12, padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 22 }}>{m.icon}</span>
+                      <div>
+                        <div className="fw-800 fs-13" style={{ color: 'var(--green)' }}>{m.label}</div>
+                        <div className="fs-11 text-muted">✅ Achieved</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Growth stats */}
+            {snapshots.length >= 2 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 16 }}>
+                {[
+                  { label: 'Current Net Worth', val: fmt(netWorth), c: netWorth >= 0 ? 'var(--green)' : 'var(--red)', icon: '💎' },
+                  { label: 'Total Growth', val: totalGrowthAmt !== null ? `${totalGrowthAmt >= 0 ? '+' : ''}${fmt(totalGrowthAmt)}` : '—', c: totalGrowthAmt >= 0 ? 'var(--green)' : 'var(--red)', icon: '📈' },
+                  { label: 'Growth %', val: growth !== null ? `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}%` : '—', c: growth >= 0 ? 'var(--green)' : 'var(--red)', icon: '📊' },
+                  { label: 'Snapshots', val: snapshots.length, c: 'var(--blue)', icon: '📸' },
+                ].map((s, i) => (
+                  <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '12px 14px', borderLeft: `3px solid ${s.c}` }}>
+                    <div className="fs-11 text-muted">{s.icon} {s.label}</div>
+                    <div className="fw-800 fs-15 mt-1" style={{ color: s.c }}>{s.val}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Trend chart */}
+            <div className="card mb-4">
+              <div className="flex justify-between items-center mb-3" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <div className="card-title" style={{ marginBottom: 0 }}>📈 Net Worth Trend</div>
+                <button className="btn btn-secondary btn-sm" onClick={takeSnapshot}>📸 Take Snapshot</button>
+              </div>
+              {chartData.length < 2
+                ? (
+                  <div className="empty" style={{ padding: '32px 0' }}>
+                    <div className="empty-icon">📈</div>
+                    <div className="empty-title">Need 2+ snapshots to show trend</div>
+                    <div className="empty-sub">Take snapshots regularly to track your net worth journey</div>
+                    <button className="btn btn-primary btn-sm mt-3" onClick={takeSnapshot}>📸 Take First Snapshot</button>
+                  </div>
+                )
+                : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="var(--green)" stopOpacity={0.25} />
+                          <stop offset="95%" stopColor="var(--green)" stopOpacity={0.02} />
+                        </linearGradient>
+                        <linearGradient id="assetsGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#4d9eff" stopOpacity={0.15} />
+                          <stop offset="95%" stopColor="#4d9eff" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border2)" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--t3)' }} />
+                      <YAxis tickFormatter={v => `₹${(v / 100000).toFixed(0)}L`} tick={{ fontSize: 10, fill: 'var(--t3)' }} width={52} />
+                      <Tooltip
+                        formatter={(v, name) => [`₹${v.toLocaleString('en-IN')}`, name === 'netWorth' ? 'Net Worth' : name === 'assets' ? 'Assets' : 'Liabilities']}
+                        contentStyle={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 9, fontSize: 12 }}
+                      />
+                      <Area type="monotone" dataKey="assets" stroke="#4d9eff" strokeWidth={1.5} fill="url(#assetsGrad)" dot={false} />
+                      <Area type="monotone" dataKey="netWorth" stroke="var(--green)" strokeWidth={2.5} fill="url(#nwGrad)" dot={{ fill: 'var(--green)', r: 4 }} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )
+              }
+            </div>
+
+            {/* Snapshot history table */}
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="fw-700 fs-13">📸 Snapshot History <span className="text-muted fw-400 fs-12">({snapshots.length}/24)</span></div>
+                <button className="btn btn-secondary btn-sm" onClick={takeSnapshot}>+ Snap Now</button>
+              </div>
+              {snapshots.length === 0
+                ? <div className="text-muted fs-13" style={{ textAlign: 'center', padding: 24 }}>No snapshots yet — click "Snap" to save today's values</div>
+                : (
+                  <table className="tbl">
+                    <thead><tr><th>Date</th><th style={{ textAlign: 'right' }}>Assets</th><th style={{ textAlign: 'right' }}>Liabilities</th><th style={{ textAlign: 'right' }}>Net Worth</th><th style={{ textAlign: 'right' }}>Change</th><th></th></tr></thead>
+                    <tbody>{snapshots.map((s, i) => {
+                      const prev = snapshots[i + 1];
+                      const change = prev ? s.netWorth - prev.netWorth : null;
+                      return (
+                        <tr key={s.id}>
+                          <td className="fw-600 fs-13">{s.label}</td>
+                          <td style={{ textAlign: 'right' }} className="amt-g fs-12">{fmt(s.totalAssets)}</td>
+                          <td style={{ textAlign: 'right' }} className="amt-r fs-12">{fmt(s.totalLiabilities)}</td>
+                          <td style={{ textAlign: 'right' }}><span className="fw-800" style={{ color: s.netWorth >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmt(s.netWorth)}</span></td>
+                          <td style={{ textAlign: 'right' }}>
+                            {change !== null
+                              ? <span className={`fw-700 fs-12 ${change >= 0 ? 'amt-g' : 'amt-r'}`}>{change >= 0 ? '+' : ''}{fmt(change)}</span>
+                              : <span className="text-muted fs-12">First</span>}
+                          </td>
+                          <td><button className="btn-icon" onClick={() => deleteSnapshot(s.id)}>🗑️</button></td>
+                        </tr>
+                      );
+                    })}</tbody>
+                  </table>
+                )}
+            </div>
+          </div>
+        );
+      })()}
 
       {activeTab === 'allocation' && (() => {
         // Asset allocation data

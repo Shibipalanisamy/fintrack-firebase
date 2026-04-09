@@ -17,7 +17,10 @@ const NAV = [
   { icon: '📉', label: 'Reports',         to: '/reports' },
   { icon: '🏦', label: 'Banking',         to: '/banking' },
   { icon: '🛡️', label: 'Insurance',       to: '/insurance' },
+  { icon: '📅', label: 'Budget Plan',     to: '/budget' },
+  { icon: '📋', label: 'Changelog', to: '/changelog' },
   { icon: '⚙️', label: 'Settings',        to: '/settings' },
+  
 ];
 
 export function Sidebar({ open, onClose }) {
@@ -54,7 +57,7 @@ export function Sidebar({ open, onClose }) {
   );
 }
 
-const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals', '/cards': 'Card Management', '/banking': 'Banking' };
+const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals', '/cards': 'Card Management', '/banking': 'Banking' , '/budget': 'Budget Plan','/changelog': 'Changelog' };
 
 export function Layout({ children }) {
   const { isDark, toggle } = useTheme();

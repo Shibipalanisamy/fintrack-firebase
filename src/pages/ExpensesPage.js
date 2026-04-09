@@ -127,16 +127,19 @@ function AmountInput({ value, onChange }) {
 
 // ─── Expense Form ──────────────────────────────────────────
 function ExpForm({ item, cats, onSave, onClose }) {
-  const STATIC_PAID_VIA = ['Paytm', 'Cash', 'Cash Wallet', 'Meal Card', 'UTS Wallet', 'Amazon Wallet'];
+  const STATIC_PAID_VIA = ['Paytm', 'Cash', 'Cash Wallet', '💵 Meal Card', 'UTS Wallet', 'Amazon Wallet'];
   const [bankPaidVia, setBankPaidVia] = useState([]);
+  const [cardPaidVia, setCardPaidVia] = useState([]);
   const [f, setF] = useState({ date: today(), category: cats.find(c => c.isFavorite)?.name || cats[0]?.name || 'Grocery', itemName: '', paidVia: '', amount: '', notes: '', ...(item ? { ...item, date: fmtDateInput(item.date) } : {}) });
   const [loading, setLoading] = useState(false);
   const ch = e => setF(p => ({ ...p, [e.target.name]: e.target.value }));
   const submit = async e => { e.preventDefault(); const amt = parseFloat(f.amount); if (!amt || amt <= 0) { toast.error('Enter a valid amount'); return; } setLoading(true); try { await onSave({ ...f, amount: amt }); } finally { setLoading(false); } };
 
-  // Load bank accounts from Firestore and merge with static list
+  // Load bank accounts and cards from Firestore and merge with static list
   useEffect(() => {
     const uid = auth.currentUser?.uid; if (!uid) return;
+
+    // Fetch bank accounts
     getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', uid)))
       .then(snap => {
         const names = snap.docs.map(d => d.data().name).filter(Boolean).sort();
@@ -145,10 +148,26 @@ function ExpForm({ item, cats, onSave, onClose }) {
         if (!item && !f.paidVia && names.length > 0) setF(p => ({ ...p, paidVia: names[0] }));
       })
       .catch(() => {});
+
+    // Fetch cards
+    getDocs(query(collection(db, 'cards'), where('userId', '==', uid)))
+      .then(snap => {
+        const labels = snap.docs
+          .map(d => d.data())
+          .filter(c => c.isActive !== false)
+          .map(c => c.last4 ? `${c.name} (****${c.last4})` : c.name)
+          .sort();
+        setCardPaidVia(labels);
+      })
+      .catch(() => {});
   }, []);
 
-  // Merged list: bank accounts first (linked to banking sync), then static wallets
-  const allPaidVia = [...bankPaidVia, ...STATIC_PAID_VIA.filter(s => !bankPaidVia.includes(s))];
+  // Merged list: bank accounts first, then cards, then static wallets
+  const allPaidVia = [
+    ...bankPaidVia,
+    ...cardPaidVia.filter(c => !bankPaidVia.includes(c)),
+    ...STATIC_PAID_VIA.filter(s => !bankPaidVia.includes(s) && !cardPaidVia.includes(s)),
+  ];
 
   return (
     <form onSubmit={submit}>
@@ -160,14 +179,17 @@ function ExpForm({ item, cats, onSave, onClose }) {
         <label className="fl">
           Paid Via
           {bankPaidVia.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)', fontWeight: 700, background: 'rgba(34,197,94,.1)', borderRadius: 10, padding: '1px 7px' }}>🏦 {bankPaidVia.length} bank{bankPaidVia.length > 1 ? 's' : ''} linked</span>}
+          {cardPaidVia.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--blue)', fontWeight: 700, background: 'rgba(77,158,255,.1)', borderRadius: 10, padding: '1px 7px' }}>💳 {cardPaidVia.length} card{cardPaidVia.length > 1 ? 's' : ''}</span>}
         </label>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginTop: 4 }}>
           {allPaidVia.map(p => {
             const isBank = bankPaidVia.includes(p);
+            const isCard = cardPaidVia.includes(p);
             return (
               <button key={p} type="button" onClick={() => setF(prev => ({ ...prev, paidVia: p }))}
-                style={{ padding: '7px 6px', borderRadius: 8, border: `2px solid ${f.paidVia === p ? (isBank ? 'var(--blue)' : 'var(--border2)') : 'var(--border2)'}`, background: f.paidVia === p ? (isBank ? 'rgba(77,158,255,.12)' : 'rgba(148,163,184,.1)') : 'var(--bg3)', cursor: 'pointer', fontSize: 11, fontWeight: 700, color: f.paidVia === p ? (isBank ? 'var(--blue)' : 'var(--text)') : 'var(--t3)', textAlign: 'center', lineHeight: 1.3, transition: 'all .15s', position: 'relative' }}>
+                style={{ padding: '7px 6px', borderRadius: 8, border: `2px solid ${f.paidVia === p ? (isBank ? 'var(--blue)' : isCard ? '#7c3aed' : 'var(--border2)') : 'var(--border2)'}`, background: f.paidVia === p ? (isBank ? 'rgba(77,158,255,.12)' : isCard ? 'rgba(124,58,237,.1)' : 'rgba(148,163,184,.1)') : 'var(--bg3)', cursor: 'pointer', fontSize: 11, fontWeight: 700, color: f.paidVia === p ? (isBank ? 'var(--blue)' : isCard ? '#7c3aed' : 'var(--text)') : 'var(--t3)', textAlign: 'center', lineHeight: 1.3, transition: 'all .15s', position: 'relative' }}>
                 {isBank && <span style={{ position: 'absolute', top: 3, right: 4, fontSize: 8, color: 'var(--green)', fontWeight: 900 }}>🏦</span>}
+                {isCard && !isBank && <span style={{ position: 'absolute', top: 3, right: 4, fontSize: 8, fontWeight: 900 }}>💳</span>}
                 {p}
               </button>
             );
@@ -175,6 +197,9 @@ function ExpForm({ item, cats, onSave, onClose }) {
         </div>
         {f.paidVia && bankPaidVia.includes(f.paidVia) && (
           <div style={{ marginTop: 5, fontSize: 11, color: 'var(--green)', fontWeight: 700 }}>✅ Will deduct from <strong>{f.paidVia}</strong> balance in Banking page</div>
+        )}
+        {f.paidVia && cardPaidVia.includes(f.paidVia) && (
+          <div style={{ marginTop: 5, fontSize: 11, color: '#7c3aed', fontWeight: 700 }}>💳 Paid via card — <strong>{f.paidVia}</strong></div>
         )}
       </div>
       <div className="fg"><label className="fl">Notes</label><textarea className="fta" name="notes" value={f.notes} onChange={ch} rows={2} /></div>
@@ -205,6 +230,13 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
   const totalBudget = Object.values(budgets).reduce((s, v) => s + v, 0);
   const budgetedCats = Object.keys(budgets).filter(k => budgets[k] > 0);
   const pieData = sorted.slice(0, 10).map(([name, value], idx) => ({ name, value, color: PALETTE[idx % PALETTE.length] }));
+
+  // Category sub-tab: 'all' | 'variable' | 'fixed'
+  const [catTab, setCatTab] = useState('all');
+  const sortedVariable = sorted.filter(([cat]) => !isFixedCat(cat));
+  const sortedFixed    = sorted.filter(([cat]) =>  isFixedCat(cat));
+  const catTabRows     = catTab === 'variable' ? sortedVariable : catTab === 'fixed' ? sortedFixed : sorted;
+  const catTabTotal    = catTabRows.reduce((s, [, amt]) => s + amt, 0);
 
   const varItems  = allItems ? allItems.filter(i => !isFixedCat(i.category)) : items;
   const fixItems  = allItems ? allItems.filter(i => isFixedCat(i.category)) : [];
@@ -281,11 +313,34 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
 
       {/* Full table with budget */}
       <div className="card">
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
           <div className="card-title" style={{ marginBottom:0 }}>📊 Category-wise Breakdown</div>
           <div className="fs-11 text-muted">Click 🎯 to set budget per category</div>
         </div>
-        <div className="tbl-wrap"><table className="tbl">
+
+        {/* Fixed / Variable sub-tabs */}
+        <div style={{ display:'flex', gap:6, marginBottom:12 }}>
+          {[
+            { key:'all',      label:`All (${sorted.length})`,           color:'var(--text)' },
+            { key:'variable', label:`🔀 Variable (${sortedVariable.length})`, color:'var(--blue)' },
+            { key:'fixed',    label:`📌 Fixed (${sortedFixed.length})`,      color:'var(--orange)' },
+          ].map(t => (
+            <button key={t.key} onClick={() => setCatTab(t.key)}
+              style={{
+                padding:'5px 14px', borderRadius:20, fontSize:12, fontWeight:700, cursor:'pointer', border:'1.5px solid',
+                borderColor: catTab === t.key ? t.color : 'var(--border2)',
+                background:  catTab === t.key ? (t.key==='variable' ? 'rgba(77,158,255,.12)' : t.key==='fixed' ? 'rgba(249,115,22,.12)' : 'var(--bg3)') : 'var(--bg3)',
+                color:       catTab === t.key ? t.color : 'var(--t3)',
+                transition:  'all .15s',
+              }}>{t.label}</button>
+          ))}
+        </div>
+
+        {catTabRows.length === 0
+          ? <div style={{ padding:'24px 0', textAlign:'center', color:'var(--t3)', fontSize:13 }}>
+              No {catTab === 'fixed' ? 'fixed' : 'variable'} expense categories found.
+            </div>
+          : <div className="tbl-wrap"><table className="tbl">
           <thead><tr>
             <th>#</th><th>Category</th>
             <th style={{ textAlign:'right' }}>Spent</th>
@@ -295,18 +350,21 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
             <th>Bar</th>
             <th></th>
           </tr></thead>
-          <tbody>{sorted.map(([cat, amt], i) => {
-            const pct = ((amt / total) * 100).toFixed(1);
+          <tbody>{catTabRows.map(([cat, amt], i) => {
+            const pct      = catTabTotal > 0 ? ((amt / catTabTotal) * 100).toFixed(1) : '0.0';
+            const totalPct = total > 0        ? ((amt / total)       * 100).toFixed(1) : '0.0';
             const budget = budgets[cat] || 0;
             const balance = budget > 0 ? budget - amt : null;
             const overBudget = balance !== null && balance < 0;
             const budgetPct = budget > 0 ? Math.min(100, (amt / budget) * 100) : parseFloat(pct);
+            const isFixed = isFixedCat(cat);
             return (
               <tr key={cat} style={{ background: overBudget ? 'rgba(244,63,94,.04)' : 'transparent' }}>
                 <td className="text-muted fs-12">{i + 1}</td>
                 <td className="fw-600 fs-13">
                   <div className="flex items-center gap-1">
                     {cat}
+                    {isFixed && catTab === 'all' && <span style={{ fontSize:9, background:'rgba(249,115,22,.15)', color:'var(--orange)', borderRadius:20, padding:'1px 6px', fontWeight:700 }}>📌</span>}
                     {overBudget && <span style={{ fontSize:10, background:'rgba(244,63,94,.15)', color:'var(--red)', borderRadius:20, padding:'1px 6px', fontWeight:700 }}>Over</span>}
                   </div>
                 </td>
@@ -332,7 +390,10 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
                     ? <span className={`fw-700 fs-12 ${balance >= 0 ? 'amt-g' : 'amt-r'}`}>{balance >= 0 ? '+' : ''}{fmt(balance)}</span>
                     : <span className="text-muted fs-12">—</span>}
                 </td>
-                <td style={{ textAlign:'right' }}><span className="fw-700" style={{ color: PALETTE[i % PALETTE.length] }}>{pct}%</span></td>
+                <td style={{ textAlign:'right' }}>
+                  <span className="fw-700" style={{ color: PALETTE[i % PALETTE.length] }}>{pct}%</span>
+                  {catTab !== 'all' && <div className="fs-10 text-muted">{totalPct}% of all</div>}
+                </td>
                 <td style={{ width:110 }}>
                   <div style={{ background:'var(--bg3)', borderRadius:4, height:6, overflow:'hidden' }}>
                     <div style={{ height:'100%', width:`${budgetPct}%`, background: overBudget ? 'var(--red)' : PALETTE[i % PALETTE.length], borderRadius:4, transition:'width .4s' }} />
@@ -347,16 +408,18 @@ function PercentageTab({ items, showFixed, isFixedCat, allItems }) {
             );
           })}</tbody>
           <tfoot><tr>
-            <td colSpan={2} className="text-muted fs-12" style={{ padding:'10px 14px' }}>TOTAL</td>
-            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(total)}</span></td>
+            <td colSpan={2} className="text-muted fs-12" style={{ padding:'10px 14px' }}>
+              {catTab === 'all' ? 'TOTAL' : catTab === 'fixed' ? '📌 FIXED TOTAL' : '🔀 VARIABLE TOTAL'}
+            </td>
+            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(catTabTotal)}</span></td>
             <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-700" style={{ color:'var(--blue)' }}>{totalBudget > 0 ? fmt(totalBudget) : '—'}</span></td>
             <td style={{ textAlign:'right', padding:'10px 14px' }}>
-              {totalBudget > 0 && <span className={`fw-800 ${total <= totalBudget ? 'amt-g' : 'amt-r'}`}>{total <= totalBudget ? '+' : ''}{fmt(totalBudget - total)}</span>}
+              {totalBudget > 0 && <span className={`fw-800 ${catTabTotal <= totalBudget ? 'amt-g' : 'amt-r'}`}>{catTabTotal <= totalBudget ? '+' : ''}{fmt(totalBudget - catTabTotal)}</span>}
             </td>
             <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-800">100%</span></td>
             <td colSpan={2} />
           </tr></tfoot>
-        </table></div>
+        </table></div>}
       </div>
     </div>
   );
@@ -773,13 +836,13 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
 
   return (
     <div>
-      {/* Summary */}
+      {/* ── Summary Stats ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 10, marginBottom: 16 }}>
         {[
-          { label: 'Est. Monthly Cost', val: fmt(monthlyTotal), c: 'var(--blue)', icon: '📅' },
-          { label: 'Active Recurring', val: activeItems.length, c: 'var(--green)', icon: '🔄' },
-          { label: 'Overdue', val: overdueCount, c: overdueCount > 0 ? 'var(--red)' : 'var(--t3)', icon: '🚨' },
-          { label: 'Due This Week', val: dueSoonCount, c: dueSoonCount > 0 ? 'var(--orange)' : 'var(--t3)', icon: '⏰' },
+          { label: 'Est. Monthly Cost', val: fmt(monthlyTotal),       c: 'var(--blue)',   icon: '📅' },
+          { label: 'Active Recurring',  val: activeItems.length,      c: 'var(--green)',  icon: '🔄' },
+          { label: 'Overdue',           val: overdueCount,            c: overdueCount > 0 ? 'var(--red)' : 'var(--t3)',    icon: '🚨' },
+          { label: 'Due This Week',     val: dueSoonCount,            c: dueSoonCount > 0 ? 'var(--orange)' : 'var(--t3)', icon: '⏰' },
         ].map((s, i) => (
           <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
             <div className="fs-11 text-muted">{s.icon} {s.label}</div>
@@ -788,17 +851,96 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
         ))}
       </div>
 
+      {/* ── Pie Chart + Category Summary List ── */}
+      {activeItems.length > 0 && (() => {
+        // Build per-category totals (monthly equivalent)
+        const catMap = {};
+        activeItems.forEach(item => {
+          const freq = FREQ_OPTIONS.find(f => f.key === item.frequency);
+          const perMonth = freq ? (parseFloat(item.amount) * 30) / freq.days : parseFloat(item.amount);
+          const cat = item.category || item.name || 'Uncategorised';
+          catMap[cat] = (catMap[cat] || 0) + perMonth;
+        });
+        const PIE_COLORS = ['#4d9eff','#22c55e','#f97316','#a78bfa','#f43f5e','#fbbf24','#2dd4bf','#fb923c','#38bdf8','#818cf8'];
+        const pieData = Object.entries(catMap)
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, value], i) => ({ name, value, color: PIE_COLORS[i % PIE_COLORS.length] }));
+
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap: 16, marginBottom: 20 }}>
+            {/* Pie chart */}
+            <div className="card">
+              <div className="card-title">🥧 Monthly Breakdown</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <ResponsiveContainer width={160} height={160}>
+                  <PieChart>
+                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={44} outerRadius={72} dataKey="value" paddingAngle={2}>
+                      {pieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                    </Pie>
+                    <Tooltip formatter={v => [`₹${fmt(v)}/mo`, '']} contentStyle={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 8, fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  {pieData.map((d, i) => (
+                    <div key={d.name} className="flex justify-between items-center mb-2">
+                      <div className="flex items-center gap-2">
+                        <span style={{ width: 9, height: 9, borderRadius: '50%', background: d.color, flexShrink: 0 }} />
+                        <span className="fs-12 text-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 110 }}>{d.name}</span>
+                      </div>
+                      <span className="fs-12 fw-700">{fmt(d.value)}</span>
+                    </div>
+                  ))}
+                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }} className="flex justify-between">
+                    <span className="fw-700 fs-12">Total/mo</span>
+                    <span className="fw-800 fs-13 amt-r">{fmt(monthlyTotal)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Summary list */}
+            <div className="card">
+              <div className="card-title">📋 Category Summary</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {pieData.map(d => {
+                  const pct = monthlyTotal > 0 ? (d.value / monthlyTotal) * 100 : 0;
+                  return (
+                    <div key={d.name}>
+                      <div className="flex justify-between items-center mb-1">
+                        <div className="flex items-center gap-2">
+                          <span style={{ width: 10, height: 10, borderRadius: '50%', background: d.color, flexShrink: 0 }} />
+                          <span className="fs-13 fw-600">{d.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="fs-12 fw-800" style={{ color: d.color }}>{fmt(d.value)}</span>
+                          <span className="fs-11 text-muted" style={{ minWidth: 34, textAlign: 'right' }}>{pct.toFixed(1)}%</span>
+                        </div>
+                      </div>
+                      <div style={{ background: 'var(--bg3)', borderRadius: 4, height: 5, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: d.color, borderRadius: 4, transition: 'width .4s' }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {!showFixed && (
         <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:10, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
           🔀 Variable only — Fixed recurring items hidden. Payments to fixed items still record to the List tab.
         </div>
       )}
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="flex justify-between items-center mb-3">
         <div className="fs-14 fw-700">🔄 Active Recurring ({displayItems.length}{!showFixed ? ' variable' : ''})</div>
         <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm(BLANK_REC); setModal(true); }}>+ Add Recurring</button>
       </div>
 
+      {/* ── Recurring Cards ── */}
       {loading ? <div className="spin-center"><div className="spin spin-lg" /></div>
         : activeItems.length === 0
           ? (
@@ -809,17 +951,55 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
           : (
             <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
               {displayItems.sort((a, b) => getDaysUntil(a.nextDue) - getDaysUntil(b.nextDue)).map(item => {
-                const days = getDaysUntil(item.nextDue);
-                const status = getDueStatus(days);
-                const freq = FREQ_OPTIONS.find(f => f.key === item.frequency);
+                const days    = getDaysUntil(item.nextDue);
+                const status  = getDueStatus(days);
+                const freq    = FREQ_OPTIONS.find(f => f.key === item.frequency);
+
+                // ── Payment status logic ──────────────────────────────
+                // Paid = lastPaid exists and was on/after the current cycle start
+                const cycleStart = (() => {
+                  const d = new Date(item.nextDue);
+                  d.setDate(d.getDate() - (freq?.days || 30));
+                  return d;
+                })();
+                const lastPaidDate = item.lastPaid ? new Date(item.lastPaid) : null;
+                const isPaid    = lastPaidDate && lastPaidDate >= cycleStart;
+                const isOverdue = !isPaid && days < 0;
+
+                // ── Banner color ──────────────────────────────────────
+                const bannerBg     = isPaid    ? 'rgba(34,197,94,.08)'   : isOverdue ? 'rgba(244,63,94,.08)'   : 'var(--bg2)';
+                const bannerBorder = isPaid    ? 'rgba(34,197,94,.35)'   : isOverdue ? 'rgba(244,63,94,.35)'   : 'var(--border)';
+                const bannerLeft   = isPaid    ? '#22c55e'               : isOverdue ? '#f43f5e'               : status.color;
+
                 return (
-                  <div key={item.id} style={{ background: 'var(--bg2)', border: `1px solid var(--border)`, borderRadius: 12, padding: '12px 16px', borderLeft: `4px solid ${status.color}` }}>
-                    <div className="flex justify-between items-start" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <div key={item.id} style={{ background: bannerBg, border: `1px solid ${bannerBorder}`, borderRadius: 12, padding: '12px 16px', borderLeft: `4px solid ${bannerLeft}`, position: 'relative' }}>
+
+                    {/* ── Status label top-right on the card ─── */}
+                    <div style={{ position: 'absolute', top: 10, right: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {isPaid && (
+                        <span style={{ background: 'rgba(34,197,94,.15)', color: '#22c55e', fontSize: 10, fontWeight: 900, padding: '2px 10px', borderRadius: 20, border: '1px solid rgba(34,197,94,.3)' }}>
+                          ✅ PAID
+                        </span>
+                      )}
+                      {isOverdue && (
+                        <span style={{ background: 'rgba(244,63,94,.15)', color: '#f43f5e', fontSize: 10, fontWeight: 900, padding: '2px 10px', borderRadius: 20, border: '1px solid rgba(244,63,94,.3)' }}>
+                          ⚠️ OVERDUE
+                        </span>
+                      )}
+                      {!isPaid && !isOverdue && (
+                        <span style={{ background: status.bg, color: status.color, fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 20 }}>
+                          {status.label}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex justify-between items-start" style={{ flexWrap: 'wrap', gap: 8, paddingRight: 80 }}>
                       <div style={{ flex: 1, minWidth: 200 }}>
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1" style={{ flexWrap: 'wrap' }}>
                           <span className="fw-800 fs-14">{item.name}</span>
-                          <span style={{ background: status.bg, color: status.color, fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 20, whiteSpace: 'nowrap' }}>{status.label}</span>
-                          {item.lastPaid && <span className="text-muted fs-11">Last paid: {new Date(item.lastPaid).toLocaleDateString('en-IN')}</span>}
+                          {item.lastPaid && (
+                            <span className="text-muted fs-11">Last paid: {new Date(item.lastPaid).toLocaleDateString('en-IN')}</span>
+                          )}
                         </div>
                         <div className="flex items-center gap-3 fs-12 text-muted" style={{ flexWrap: 'wrap' }}>
                           {item.category && <span style={{ background: 'var(--bg3)', borderRadius: 20, padding: '1px 8px', fontWeight: 600 }}>{item.category}</span>}
@@ -830,7 +1010,16 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="fw-900 fs-16 amt-r">{fmt(parseFloat(item.amount))}</span>
-                        <button className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => recordPayment(item)}>✓ Pay</button>
+                        {!isPaid && (
+                          <button className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '4px 10px', background: isOverdue ? '#f43f5e' : undefined, borderColor: isOverdue ? '#f43f5e' : undefined }} onClick={() => recordPayment(item)}>
+                            {isOverdue ? '⚠️ Pay Now' : '✓ Pay'}
+                          </button>
+                        )}
+                        {isPaid && (
+                          <button className="btn btn-secondary btn-sm" style={{ fontSize: 11, padding: '4px 10px', color: '#22c55e', borderColor: 'rgba(34,197,94,.4)' }} disabled>
+                            ✅ Done
+                          </button>
+                        )}
                         <button className="btn-icon" onClick={() => { setEdit(item); setForm({ ...item }); setModal(true); }}>✏️</button>
                         <button className="btn-icon" style={{ fontSize: 12, color: 'var(--t3)' }} title="Pause" onClick={() => toggleActive(item)}>⏸️</button>
                         <button className="btn-icon" onClick={() => setDelId(item.id)}>🗑️</button>
@@ -843,7 +1032,7 @@ function RecurringTab({ cats, showFixed, isFixedCat }) {
             </div>
           )}
 
-      {/* Inactive/Paused */}
+      {/* ── Inactive/Paused ── */}
       {inactiveItems.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div className="fs-13 fw-700 text-muted mb-2">⏸️ Paused ({inactiveItems.length})</div>
@@ -1046,6 +1235,251 @@ function CategoryDetailTab({ cats }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Paid Via Tab ──────────────────────────────────────────
+function PaidViaTab({ items, showFixed, isFixedCat }) {
+  const filtered = showFixed ? items : items.filter(i => !isFixedCat(i.category));
+  const total = filtered.reduce((s, i) => s + +i.amount, 0);
+  const [expanded, setExpanded] = useState(new Set());
+
+  const toggleExpand = (method) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(method) ? next.delete(method) : next.add(method);
+      return next;
+    });
+  };
+
+  // Build summary map — keep raw transactions per method
+  const map = {};
+  filtered.forEach(i => {
+    const key = i.paidVia || '—';
+    if (!map[key]) map[key] = { amount: 0, count: 0, txns: [] };
+    map[key].amount += +i.amount;
+    map[key].count += 1;
+    map[key].txns.push(i);
+  });
+  const rows = Object.entries(map).sort((a, b) => b[1].amount - a[1].amount);
+
+  const COLORS     = ['#378ADD','#22c55e','#f97316','#a78bfa','#f43f5e','#0ea5e9','#eab308','#7c3aed','#10b981','#ec4899'];
+  const CAT_COLORS = ['#4d9eff','#22c55e','#f97316','#a78bfa','#f43f5e','#0ea5e9','#eab308','#7c3aed','#10b981','#ec4899','#64748b','#84cc16'];
+
+  if (filtered.length === 0) return (
+    <div className="card"><div className="empty"><div className="empty-icon">💳</div><div className="empty-title">No data</div><div className="empty-sub">Add expenses with a Paid Via value to see breakdown</div></div></div>
+  );
+
+  return (
+    <div>
+      {/* Summary stat cards */}
+      <div className="stats mb-4">
+        {[
+          { icon: '💰', label: 'Total Spent',      val: `₹${total.toLocaleString('en-IN', { minimumFractionDigits: 0 })}`, c: 'var(--blue)' },
+          { icon: '💳', label: 'Payment Methods',  val: rows.length,      c: 'var(--purple, #7c3aed)' },
+          { icon: '🏆', label: 'Top Method',        val: rows[0]?.[0] || '—', c: 'var(--orange)' },
+          { icon: '📦', label: 'Transactions',      val: filtered.length,  c: 'var(--green)' },
+        ].map((s, i) => (
+          <div key={i} className="stat" style={{ '--c': s.c }}>
+            <div className="stat-icon">{s.icon}</div>
+            <div className="stat-val" style={{ color: s.c, fontSize: typeof s.val === 'string' && s.val.length > 10 ? 14 : undefined }}>{s.val}</div>
+            <div className="stat-label">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Table with expandable rows */}
+      <div className="card">
+        <div className="card-title">💳 Paid Via — Breakdown</div>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th style={{ width: 36 }} title="Expand to see date-wise breakdown" />
+                <th>#</th>
+                <th>Payment Method</th>
+                <th style={{ textAlign: 'right' }}>Amount</th>
+                <th style={{ textAlign: 'right' }}>Txns</th>
+                <th style={{ textAlign: 'right' }}>% of Total</th>
+                <th style={{ minWidth: 120 }}>Bar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([method, data], i) => {
+                const pct     = total > 0 ? ((data.amount / total) * 100).toFixed(1) : 0;
+                const color   = COLORS[i % COLORS.length];
+                const isOpen  = expanded.has(method);
+
+                // ── Build date → category map ──
+                const dateMap = {};
+                data.txns.forEach(t => {
+                  const d = typeof t.date === 'object'
+                    ? t.date.toISOString().split('T')[0]
+                    : String(t.date).split('T')[0];
+                  if (!dateMap[d]) dateMap[d] = { total: 0, cats: {} };
+                  dateMap[d].total += +t.amount;
+                  const cat = t.category || 'Uncategorised';
+                  if (!dateMap[d].cats[cat]) dateMap[d].cats[cat] = { amount: 0, items: [] };
+                  dateMap[d].cats[cat].amount += +t.amount;
+                  if (t.itemName?.trim()) dateMap[d].cats[cat].items.push({ name: t.itemName.trim(), amount: +t.amount });
+                });
+                const sortedDates = Object.entries(dateMap).sort((a, b) => new Date(b[0]) - new Date(a[0]));
+
+                return (
+                  <>
+                    {/* ── Main row ── */}
+                    <tr key={method} style={{ background: isOpen ? `${color}10` : 'transparent', transition: 'background .2s' }}>
+                      <td>
+                        <button
+                          onClick={() => toggleExpand(method)}
+                          title={isOpen ? 'Collapse' : 'Expand date-wise breakdown'}
+                          style={{
+                            width: 24, height: 24, borderRadius: 6,
+                            border: `2px solid ${isOpen ? color : 'var(--border2)'}`,
+                            background: isOpen ? color : 'var(--bg3)',
+                            color: isOpen ? '#fff' : color,
+                            fontWeight: 900, fontSize: 16, lineHeight: 1,
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            transition: 'all .15s',
+                          }}
+                        >
+                          {isOpen ? '−' : '+'}
+                        </button>
+                      </td>
+                      <td className="text-muted fs-12">{i + 1}</td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                          <span className="fw-700 fs-13">{method}</span>
+                        </div>
+                      </td>
+                      <td style={{ textAlign: 'right' }}><span className="amt amt-r fw-800">₹{data.amount.toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span></td>
+                      <td style={{ textAlign: 'right' }}><span className="badge" style={{ fontSize: 12 }}>{data.count}</span></td>
+                      <td style={{ textAlign: 'right' }}><span className="fw-700 fs-13" style={{ color }}>{pct}%</span></td>
+                      <td>
+                        <div style={{ background: 'var(--bg3)', borderRadius: 6, height: 8, overflow: 'hidden', minWidth: 100 }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 6, transition: 'width .5s' }} />
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* ── Expanded panel: date-wise → category breakdown ── */}
+                    {isOpen && (
+                      <tr key={`${method}-detail`}>
+                        <td colSpan={7} style={{ padding: 0, borderBottom: `2px solid ${color}40` }}>
+                          <div style={{ background: `${color}08`, padding: '14px 16px 18px 36px', borderTop: `1px solid ${color}30` }}>
+
+                            {/* Panel header */}
+                            <div style={{ fontSize: 11, fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ width: 16, height: 2, background: color, borderRadius: 2, display: 'inline-block' }} />
+                              📅 {method} — Date-wise Category Breakdown
+                              <span style={{ width: 16, height: 2, background: color, borderRadius: 2, display: 'inline-block' }} />
+                            </div>
+
+                            {/* One card per date */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              {sortedDates.map(([dateStr, dayData]) => {
+                                const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-IN', {
+                                  weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+                                });
+                                const catEntries = Object.entries(dayData.cats).sort((a, b) => b[1].amount - a[1].amount);
+
+                                return (
+                                  <div key={dateStr} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+
+                                    {/* Date header bar */}
+                                    <div style={{
+                                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                      padding: '7px 14px',
+                                      background: `linear-gradient(90deg, ${color}22, transparent)`,
+                                      borderBottom: '1px solid var(--border)',
+                                    }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                                        <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--text)' }}>{dateLabel}</span>
+                                        <span style={{ fontSize: 10, color: 'var(--t3)', fontWeight: 600 }}>
+                                          · {catEntries.length} categor{catEntries.length > 1 ? 'ies' : 'y'}
+                                        </span>
+                                      </div>
+                                      <span style={{ fontSize: 13, fontWeight: 900, color }}>{fmt(dayData.total)}</span>
+                                    </div>
+
+                                    {/* Category rows */}
+                                    <div style={{ padding: '4px 8px 6px' }}>
+                                      {catEntries.map(([cat, catData], ci) => {
+                                        const catPct   = dayData.total > 0 ? ((catData.amount / dayData.total) * 100).toFixed(0) : 0;
+                                        const catColor = CAT_COLORS[ci % CAT_COLORS.length];
+                                        return (
+                                          <div key={cat} style={{
+                                            display: 'flex', alignItems: 'center', gap: 8,
+                                            padding: '5px 6px',
+                                            borderBottom: ci < catEntries.length - 1 ? '1px dashed var(--border)' : 'none',
+                                          }}>
+
+                                            {/* Category badge */}
+                                            <span style={{
+                                              background: `${catColor}20`, color: catColor,
+                                              border: `1px solid ${catColor}50`,
+                                              borderRadius: 20, padding: '2px 10px',
+                                              fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', flexShrink: 0,
+                                            }}>
+                                              {cat}
+                                            </span>
+
+                                            {/* Item name chips (if entered) */}
+                                            {catData.items.length > 0 && (
+                                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
+                                                {catData.items.map((it, ii) => (
+                                                  <span key={ii} style={{
+                                                    fontSize: 10, color: 'var(--t2)',
+                                                    background: 'var(--bg3)', borderRadius: 4, padding: '1px 7px', fontWeight: 600,
+                                                  }}>
+                                                    {it.name}
+                                                    {catData.items.length > 1 && (
+                                                      <span style={{ color: 'var(--t3)', marginLeft: 3 }}>· {fmt(it.amount)}</span>
+                                                    )}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            )}
+
+                                            {/* Mini bar + pct + amount */}
+                                            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                                              <div style={{ width: 56, height: 5, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                                                <div style={{ height: '100%', width: `${catPct}%`, background: catColor, borderRadius: 4 }} />
+                                              </div>
+                                              <span style={{ fontSize: 10, color: 'var(--t3)', fontWeight: 700, minWidth: 28, textAlign: 'right' }}>{catPct}%</span>
+                                              <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)', minWidth: 72, textAlign: 'right' }}>{fmt(catData.amount)}</span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td /><td /><td className="fw-800 fs-13">TOTAL</td>
+                <td style={{ textAlign: 'right' }}><span className="amt amt-r fw-800">₹{total.toLocaleString('en-IN', { minimumFractionDigits: 0 })}</span></td>
+                <td style={{ textAlign: 'right' }}><span className="fw-700">{filtered.length}</span></td>
+                <td style={{ textAlign: 'right' }}><span className="fw-700">100%</span></td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1580,6 +2014,7 @@ export default function ExpensesPage() {
           { key: 'groups',    label: '🗂️ Group Summary' },
           { key: 'compare',   label: '🔀 Compare' },
           { key: 'catdetail', label: '🔎 Category Detail' },
+          { key: 'paidvia',   label: '💳 Paid Via' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
@@ -1700,6 +2135,7 @@ export default function ExpensesPage() {
       {tab === 'groups'    && <GroupSummaryTab items={filteredByToggle} showFixed={showFixed} />}
       {tab === 'compare'   && <CompareTab showFixed={showFixed} isFixedCat={isFixedCat} />}
       {tab === 'catdetail' && <CategoryDetailTab cats={cats} />}
+      {tab === 'paidvia'   && <PaidViaTab items={filteredByToggle} showFixed={showFixed} isFixedCat={isFixedCat} />}
 
       {modal && <Modal title={edit ? '✏️ Edit Expense' : '➕ Add Expense'} onClose={() => { setModal(false); setEdit(null); }}><ExpForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}

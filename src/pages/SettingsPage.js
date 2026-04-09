@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 // ─── Category Form ─────────────────────────────────────────
 function CatForm({ item, type, onSave, onClose }) {
-  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, ...(item || {}) });
+  const [f, setF] = useState({ name: '', color: PALETTE[0], type, isFavorite: false, isFixed: false, ...(item || {}) });
   const [loading, setLoading] = useState(false);
   const submit = async e => { e.preventDefault(); setLoading(true); try { await onSave(f); } finally { setLoading(false); } };
   return (
@@ -29,6 +29,18 @@ function CatForm({ item, type, onSave, onClose }) {
           <span className="fs-13 text-muted">{f.isFavorite ? '⭐ Marked as Favourite' : 'Mark as Favourite'}</span>
         </div>
       </div>
+      {type === 'expense' && (
+        <div className="fg">
+          <label className="fl">Fixed Expense</label>
+          <div className="flex items-center gap-2" style={{ marginTop: 6 }}>
+            <button type="button" onClick={() => setF(p => ({ ...p, isFixed: !p.isFixed }))}
+              style={{ width: 36, height: 20, borderRadius: 10, background: f.isFixed ? 'var(--orange)' : 'var(--bg4)', border: '1px solid var(--border2)', position: 'relative', transition: 'background .2s', cursor: 'pointer' }}>
+              <span style={{ position: 'absolute', top: 2, left: f.isFixed ? 18 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'left .2s' }} />
+            </button>
+            <span className="fs-13 text-muted">{f.isFixed ? '📌 Fixed Expense (recurring monthly)' : 'Mark as Fixed Expense'}</span>
+          </div>
+        </div>
+      )}
       <div className="modal-foot">
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? <span className="spin" /> : null}{item ? 'Update' : 'Add Category'}</button>
@@ -894,11 +906,128 @@ function BackupSection() {
   );
 }
 
+// ─── App Lock Section ──────────────────────────────────────
+const PIN_KEY = 'fintrack_app_pin';
+
+function AppLockSection() {
+  const [hasPin, setHasPin] = useState(!!localStorage.getItem(PIN_KEY));
+  const [mode, setMode] = useState('idle'); // idle | setup | confirm
+  const [input, setInput] = useState('');
+  const [tempPin, setTempPin] = useState('');
+  const [error, setError] = useState('');
+  const [shake, setShake] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const triggerShake = () => { setShake(true); setTimeout(() => setShake(false), 500); };
+
+  const handleDigit = (d) => {
+    if (input.length >= 4) return;
+    const newInput = input + d;
+    setInput(newInput);
+    setError('');
+    if (newInput.length === 4) {
+      setTimeout(() => {
+        if (mode === 'setup') {
+          setTempPin(newInput); setMode('confirm'); setInput('');
+        } else if (mode === 'confirm') {
+          if (newInput === tempPin) {
+            localStorage.setItem(PIN_KEY, newInput);
+            setHasPin(true); setMode('idle'); setInput(''); setTempPin('');
+            setSuccess(true); setTimeout(() => setSuccess(false), 2500);
+            toast.success('PIN set! App will lock after 1 min in background.');
+          } else {
+            setError("PINs don't match. Try again.");
+            triggerShake(); setTempPin(''); setMode('setup'); setInput('');
+          }
+        }
+      }, 150);
+    }
+  };
+
+  const handleDelete = () => { setInput(p => p.slice(0, -1)); setError(''); };
+
+  const removePin = () => {
+    localStorage.removeItem(PIN_KEY);
+    setHasPin(false); setMode('idle'); setInput(''); setError('');
+    toast.success('App lock removed.');
+  };
+
+  const cancel = () => { setMode('idle'); setInput(''); setTempPin(''); setError(''); };
+
+  const dots = Array.from({ length: 4 }, (_, i) => i < input.length);
+
+  return (
+    <div className="card mb-4">
+      <div className="card-title">🔐 App Lock</div>
+      <div className="text-muted fs-12 mb-4">Secure your FinTrack with a 4-digit PIN. The app locks automatically after 1 minute in the background.</div>
+
+      {mode === 'idle' ? (
+        <div>
+          {/* Status badge */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: hasPin ? 'rgba(34,197,94,.08)' : 'rgba(148,163,184,.08)', border: `1px solid ${hasPin ? 'rgba(34,197,94,.25)' : 'var(--border2)'}`, borderRadius: 10, padding: '10px 16px' }}>
+              <span style={{ fontSize: 20 }}>{hasPin ? '🔒' : '🔓'}</span>
+              <div>
+                <div className="fw-700 fs-13" style={{ color: hasPin ? 'var(--green)' : 'var(--t2)' }}>{hasPin ? 'PIN Lock Enabled' : 'No PIN Set'}</div>
+                <div className="fs-11 text-muted">{hasPin ? 'App locks after 1 min in background' : 'App is currently unlocked'}</div>
+              </div>
+            </div>
+            {success && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--green)' }}>✅ PIN saved!</span>}
+          </div>
+          <div className="flex gap-3" style={{ flexWrap: 'wrap' }}>
+            <button className="btn btn-primary btn-sm" onClick={() => { setMode('setup'); setInput(''); setError(''); }}>
+              {hasPin ? '🔄 Change PIN' : '➕ Set PIN'}
+            </button>
+            {hasPin && (
+              <button className="btn btn-danger btn-sm" onClick={removePin}>🗑️ Remove PIN</button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div style={{ maxWidth: 300 }}>
+          <div className="fs-13 fw-700 mb-1" style={{ color: 'var(--blue)' }}>
+            {mode === 'setup' ? '🔢 Enter new 4-digit PIN' : '🔁 Re-enter PIN to confirm'}
+          </div>
+          <div className="fs-12 text-muted mb-3">
+            {mode === 'setup' ? 'Choose a PIN you can remember' : 'Must match the PIN you just entered'}
+          </div>
+
+          {/* Dots */}
+          <div style={{ display: 'flex', gap: 14, marginBottom: 8, ...(shake ? { animation: 'shake .4s ease' } : {}) }}>
+            {dots.map((filled, i) => (
+              <div key={i} style={{ width: 16, height: 16, borderRadius: '50%', border: `2px solid ${filled ? 'var(--blue)' : 'var(--border2)'}`, background: filled ? 'var(--blue)' : 'transparent', transition: 'all .15s', transform: filled ? 'scale(1.15)' : 'scale(1)' }} />
+            ))}
+          </div>
+          {error && <div className="fs-12 mb-2" style={{ color: 'var(--red)', fontWeight: 700 }}>{error}</div>}
+
+          {/* Numpad */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 52px)', gap: 8, marginBottom: 14 }}>
+            {['1','2','3','4','5','6','7','8','9','','0','⌫'].map((k, i) => {
+              if (k === '') return <div key={i} />;
+              const isDel = k === '⌫';
+              return (
+                <button key={i} type="button" onClick={() => isDel ? handleDelete() : handleDigit(k)}
+                  style={{ height: 52, borderRadius: 10, border: isDel ? 'none' : '1px solid var(--border2)', background: isDel ? 'transparent' : 'var(--bg3)', fontSize: isDel ? 18 : 20, fontWeight: 700, color: isDel ? 'var(--t3)' : 'var(--text)', cursor: 'pointer', transition: 'all .1s' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg2)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = isDel ? 'transparent' : 'var(--bg3)'; }}>
+                  {k}
+                </button>
+              );
+            })}
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={cancel}>✕ Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Settings Page ─────────────────────────────────────────
 export default function SettingsPage() {
   return (
     <div>
       <div className="page-head"><div className="page-title">⚙️ Settings</div></div>
+      <AppLockSection />
       <BackupSection />
       <DemergerSection />
       <DataFixSection />

@@ -15,7 +15,10 @@ import SettingsPage from './pages/SettingsPage';
 import InsurancePage from './pages/InsurancePage';
 import GoalsPage from './pages/GoalsPage';
 import CardsPage from './pages/CardsPage';
+import BudgetPage from './pages/BudgetPage'
 import BankingPage from './pages/BankingPage'
+import ChangelogPage from './pages/ChangelogPage';
+import AppLock from './AppLock';
 import './App.css';
 
 function Protected({ children }) {
@@ -48,6 +51,8 @@ function App() {
                     <Route path="/goals" element={<GoalsPage />} />
                     <Route path="/cards" element={<CardsPage />} />
                     <Route path="/banking" element={<BankingPage />} />
+                    <Route path="/budget"  element={<BudgetPage />} />
+                    <Route path="/changelog" element={<ChangelogPage />} />
                   </Routes>
                 </Layout>
               </Protected>
