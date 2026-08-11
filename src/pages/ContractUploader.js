@@ -332,13 +332,56 @@ function parseMstock(text) {
   return trades;
 }
 
+function parseECAS(text) {
+  const trades = [];
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const dateRegex = /(\d{1,2})[\/\-\.\s]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\/\-\.\s]+(\d{4})/i;
+  const actionRegex = /\b(Purchase|Buy|Sell|Sale|Redemption|Withdraw|Withdrawal|Switch|Dividend)\b/i;
+  const numberRegex = /([\d,]+(?:\.\d+)?)/g;
+
+  for (const line of lines) {
+    const dateMatch = line.match(dateRegex);
+    const actionMatch = line.match(actionRegex);
+    if (!dateMatch || !actionMatch) continue;
+    const numbers = [...line.matchAll(numberRegex)].map(m => parseNum(m[1]));
+    if (numbers.length < 2) continue;
+    const qty = numbers[0];
+    const rate = numbers[1];
+    const netAmt = numbers[numbers.length - 1];
+    const grossAmt = Math.round(rate * qty * 100) / 100;
+    const buySell = /sell|redemption|withdraw|switch out/i.test(actionMatch[1]) ? 'SELL' : 'BUY';
+    const symbolParts = (line.match(/\b[A-Z][A-Z0-9&\.\-]{1,8}\b/g) || []).filter(w => !/^(BUY|SELL|SALE|SWITCH|RED|REDEMPTION|WITHDRAW|WITHDRAWAL|DIVIDEND)$/i.test(w));
+    const symbol = symbolParts[0] || 'eCAS';
+    const monthNumber = monthMap[dateMatch[2].toLowerCase().slice(0, 3)] ?? 0;
+    trades.push({
+      source: 'eCAS',
+      tradeDate: `${dateMatch[1].padStart(2, '0')}/${String(monthNumber + 1).padStart(2, '0')}/${dateMatch[3]}`,
+      symbol,
+      securityName: line,
+      buySell,
+      qty,
+      rate,
+      grossAmt,
+      brokerage: 0,
+      netAmt,
+      stt: 0,
+      gst: 0,
+      stampDuty: 0,
+      exchCharges: 0,
+    });
+  }
+
+  return trades;
+}
+
 function parseNum(s) {
   if (!s) return 0;
   return parseFloat(String(s).replace(/,/g, '')) || 0;
 }
 
-const PARSERS = { Aionion: parseAionion, Mstock: parseMstock };
-export const SOURCES = ['Mstock', 'Aionion'];   // ← add this line
+const PARSERS = { Aionion: parseAionion, Mstock: parseMstock, eCAS: parseECAS };
+export const SOURCES = ['Mstock', 'Aionion', 'eCAS'];
 
 
 // ─── Save to Firestore ──────────────────────────────────────
@@ -366,10 +409,10 @@ async function loadSavedTrades() {
 }
 
 // ─── Main Component ─────────────────────────────────────────
-export default function ContractUploader({ onClose, onTradesSaved }) {
-  const [source, setSource]             = useState('Mstock');
+export default function ContractUploader({ onClose, onTradesSaved, forceSource, pdfPassword, showHoldingsComparison = false, holdings = [] }) {
+  const [source, setSource]             = useState(forceSource || 'Mstock');
   const [file, setFile]                 = useState(null);
-  const [password, setPassword]         = useState('');
+  const [password, setPassword]         = useState(pdfPassword || '');
   const [showPwd, setShowPwd]           = useState(false);
   const [extracting, setExtracting]     = useState(false);
   const [saving, setSaving]             = useState(false);
@@ -387,6 +430,8 @@ export default function ContractUploader({ onClose, onTradesSaved }) {
   const [settingsSymbols, setSettingsSymbols] = useState([]);  // symbols from Settings page
   // symbolMappings: Map keyed "broker::securityName" → googleSymbol (persisted in Firestore)
   const [symbolMappings, setSymbolMappings]   = useState({});
+  useEffect(() => { if (forceSource) setSource(forceSource); }, [forceSource]);
+  useEffect(() => { if (pdfPassword) setPassword(pdfPassword); }, [pdfPassword]);
   // tradeGoogleSymbols: per-trade overrides for the current preview { [tradeIndex]: googleSymbol }
   const [tradeGoogleSymbols, setTradeGoogleSymbols] = useState({});
   const fileRef = useRef(null);
@@ -604,6 +649,45 @@ export default function ContractUploader({ onClose, onTradesSaved }) {
     totalSTT:  preview.trades.reduce((s,t) => s + (t.stt || 0), 0),
   } : null;
 
+  const holdingsMap = showHoldingsComparison ? holdings.reduce((acc, i) => {
+    const key = (i.symbol || i.stockName || '').toString().toUpperCase();
+    if (!acc[key]) acc[key] = { symbol: key, name: i.stockName || i.symbol || key, qty: 0, value: 0, currentPrice: 0 };
+    acc[key].qty += i.quantity || 0;
+    acc[key].value += i.currentValue || 0;
+    acc[key].currentPrice = i.currentPrice || acc[key].currentPrice;
+    return acc;
+  }, {}) : {};
+
+  const previewComparison = showHoldingsComparison && preview?.trades ? Object.values(preview.trades.reduce((acc, t, idx) => {
+    const key = (tradeGoogleSymbols[idx] || t.symbol || t.securityName || 'eCAS').toString().toUpperCase();
+    if (!acc[key]) acc[key] = { symbol: key, securityName: t.securityName || '', buyQty: 0, sellQty: 0, buyValue: 0, sellValue: 0, netValue: 0 };
+    if (t.buySell === 'SELL') {
+      acc[key].sellQty += t.qty;
+      acc[key].sellValue += t.netAmt;
+      acc[key].netValue -= t.netAmt;
+    } else {
+      acc[key].buyQty += t.qty;
+      acc[key].buyValue += t.netAmt;
+      acc[key].netValue += t.netAmt;
+    }
+    return acc;
+  }, {})) : [];
+
+  const previewMonthly = showHoldingsComparison && preview?.trades ? Object.values(preview.trades.reduce((acc, t) => {
+    const dateText = t.tradeDate || '';
+    const m = dateText.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})/);
+    const monthKey = m ? `${m[3]}-${m[2]}` : 'Unknown';
+    if (!acc[monthKey]) acc[monthKey] = { month: monthKey, buy: 0, sell: 0, net: 0 };
+    if (t.buySell === 'SELL') {
+      acc[monthKey].sell += t.netAmt;
+      acc[monthKey].net -= t.netAmt;
+    } else {
+      acc[monthKey].buy += t.netAmt;
+      acc[monthKey].net += t.netAmt;
+    }
+    return acc;
+  }, {})) : [];
+
   // ── Group history by fileName ──
   const historyGroups = savedTrades.reduce((acc, t) => {
     const key = t.fileName || 'Unknown';
@@ -697,14 +781,20 @@ export default function ContractUploader({ onClose, onTradesSaved }) {
           {/* Source selector */}
           <div>
             <div className="fs-12 fw-700 text-muted mb-2">Broker</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {SOURCES.map(s => (
-                <button key={s} onClick={() => setSource(s)}
-                  style={{ padding: '10px 8px', borderRadius: 10, border: `2px solid ${source === s ? 'var(--blue)' : 'var(--border2)'}`, background: source === s ? 'rgba(77,158,255,.1)' : 'var(--bg3)', cursor: 'pointer', fontSize: 13, fontWeight: 800, color: source === s ? 'var(--blue)' : 'var(--t3)', transition: 'all .15s' }}>
-                  {s === 'Mstock' ? '📈' : '🏦'} {s}
-                </button>
-              ))}
-            </div>
+            {forceSource ? (
+              <div style={{ padding: '10px', borderRadius: 10, background: 'var(--bg3)', border: '1px solid var(--border2)', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                {forceSource === 'eCAS' ? '🧾' : '📄'} {forceSource}
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {SOURCES.map(s => (
+                  <button key={s} onClick={() => setSource(s)}
+                    style={{ padding: '10px 8px', borderRadius: 10, border: `2px solid ${source === s ? 'var(--blue)' : 'var(--border2)'}`, background: source === s ? 'rgba(77,158,255,.1)' : 'var(--bg3)', cursor: 'pointer', fontSize: 13, fontWeight: 800, color: source === s ? 'var(--blue)' : 'var(--t3)', transition: 'all .15s' }}>
+                    {s === 'Mstock' ? '📈' : s === 'Aionion' ? '🏦' : '🧾'} {s}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Drop zone */}

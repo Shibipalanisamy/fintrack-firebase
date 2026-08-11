@@ -90,7 +90,7 @@ export const expenseService = {
   async getAll(filters = {}) {
     const q = query(collection(db, 'expenses'), where('userId', '==', uid()), orderBy('date', 'desc'));
     const snap = await getDocs(q);
-    let docs = snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }));
+    let docs = snap.docs.map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date), updatedAt: d.data().updatedAt ? toDate(d.data().updatedAt) : null }));
     if (filters.dateFrom && filters.dateTo) {
       const from = new Date(filters.dateFrom); const to = new Date(filters.dateTo); to.setHours(23,59,59,999);
       docs = docs.filter(d => new Date(d.date) >= from && new Date(d.date) <= to);
@@ -101,7 +101,7 @@ export const expenseService = {
     return docs;
   },
   async create(data) { return addDoc(collection(db, 'expenses'), { ...data, userId: uid(), date: Timestamp.fromDate(new Date(data.date)), createdAt: Timestamp.now() }); },
-  async update(id, data) { return updateDoc(doc(db, 'expenses', id), { ...data, date: Timestamp.fromDate(new Date(data.date)) }); },
+  async update(id, data) { return updateDoc(doc(db, 'expenses', id), { ...data, date: Timestamp.fromDate(new Date(data.date)), updatedAt: Timestamp.now() }); },
   async delete(id) { return deleteDoc(doc(db, 'expenses', id)); }
 };
 
@@ -354,6 +354,45 @@ export const goldService = {
   async delete(id) { return deleteDoc(doc(db, 'goldinvestments', id)); }
 };
 
+// ─── FRIENDS LENDING TRACKER ───────────────────────────────
+export const friendsLendingService = {
+  async getAll() {
+    const q = query(collection(db, 'friendslending'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data(), dateOfLending: toDate(d.data().dateOfLending) }))
+      .sort((a, b) => new Date(b.dateOfLending) - new Date(a.dateOfLending));
+  },
+  async create(data) { return addDoc(collection(db, 'friendslending'), { ...data, userId: uid(), dateOfLending: Timestamp.fromDate(new Date(data.dateOfLending)), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'friendslending', id), { ...data, dateOfLending: Timestamp.fromDate(new Date(data.dateOfLending)) }); },
+  async delete(id) { return deleteDoc(doc(db, 'friendslending', id)); }
+};
+
+// ─── GOLD TRACKER (pledge / loan status) ──────────────────
+export const goldTrackerService = {
+  async getAll() {
+    const q = query(collection(db, 'goldtracker'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data(), date: toDate(d.data().date) }))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+  },
+  async create(data) { return addDoc(collection(db, 'goldtracker'), { ...data, userId: uid(), date: Timestamp.fromDate(new Date(data.date)), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'goldtracker', id), { ...data, date: Timestamp.fromDate(new Date(data.date)) }); },
+  async delete(id) { return deleteDoc(doc(db, 'goldtracker', id)); }
+};
+
+// ─── GOLD QTY ADJUSTMENT LOG (history behind the row-wise + icon) ─────
+export const goldQtyLogService = {
+  async getAll(goldItemId) {
+    const q = query(collection(db, 'goldqtylogs'), where('userId', '==', uid()), where('goldItemId', '==', goldItemId));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt?.toDate?.() || b.createdAt) - new Date(a.createdAt?.toDate?.() || a.createdAt));
+  },
+  async create(data) { return addDoc(collection(db, 'goldqtylogs'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async delete(id) { return deleteDoc(doc(db, 'goldqtylogs', id)); }
+};
+
 // ─── DIVIDENDS ────────────────────────────────────────────
 const parseDateSafe = (d) => {
   if (!d) return new Date();
@@ -452,6 +491,34 @@ export const accountsService = {
   async create(data) { return addDoc(collection(db, 'accounts'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
   async update(id, data) { return updateDoc(doc(db, 'accounts', id), data); },
   async delete(id) { return deleteDoc(doc(db, 'accounts', id)); }
+};
+
+// ─── EXPENSE GROUPS ───────────────────────────────────────
+export const groupService = {
+  async getAll() {
+    const q = query(collection(db, 'expenseGroups'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
+  },
+  async create(data) {
+    return addDoc(collection(db, 'expenseGroups'), { ...data, userId: uid(), createdAt: Timestamp.now() });
+  },
+  async update(id, data) { return updateDoc(doc(db, 'expenseGroups', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'expenseGroups', id)); },
+  async seedDefaults(userId) {
+    const snap = await getDocs(query(collection(db, 'expenseGroups'), where('userId', '==', userId)));
+    if (!snap.empty) return;
+    const defaults = [
+      { key: 'house',      label: 'House Expenses',  icon: '🏠', color: '#f97316', order: 0, categories: ['Gas Booking or Advance','Snacks','Grocery','Water Can and Advance','Internet / Modem','Meat or Egg','Dry Fruits','Flour','Vegetables for Office','Vegetables','Vegetable','Milk','Oil','Fruits','Rice','Electricity Bill','Curd','Paneer','House Rent / Advance','House Rent','Rent','Basic Needs','Wife Basic Needs'] },
+      { key: 'investment', label: 'Investments',      icon: '📈', color: '#22c55e', order: 1, categories: ['Stock Investment','RD Amount','Wife Investment Amount','SIP Mutual Fund','Gold Investment','PPF','Term Insurance','Business Investment','Bank Deposit'] },
+      { key: 'wheel',      label: 'Wheel Expenses',   icon: '🚗', color: '#93c5fd', order: 2, categories: ['Bike Petrol','Cab','Bike Service','Car Petrol','Gokul Bike Petrol','Share Auto','Parking'] },
+      { key: 'booking',    label: 'Booking / Travel', icon: '🎫', color: '#a78bfa', order: 3, categories: ['Bus Booking','Train Booking','Home Town Bus Fee','MTC Bus Fees','Home Town Fees'] },
+      { key: 'medical',    label: 'Medical',           icon: '🏥', color: '#f43f5e', order: 4, categories: ['Medical Treatment','Doctor Consultation Fees','Hospital Fees','Health Insurance','Scan and Test'] },
+    ];
+    for (const g of defaults) {
+      await addDoc(collection(db, 'expenseGroups'), { ...g, userId, createdAt: Timestamp.now() });
+    }
+  },
 };
 
 export const ledgerService = {

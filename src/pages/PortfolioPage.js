@@ -6,8 +6,9 @@ import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Legend } from 'recharts';
 import toast from 'react-hot-toast';
 import { db, auth } from '../utils/firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
 import ContractUploader, { SOURCES } from './ContractUploader';
+import ECASAnalyzer from './ECASAnalyzer';
 
 // Broker sources supported by ContractUploader
 //const SOURCES = ['Mstock', 'Aionion'];
@@ -671,7 +672,7 @@ function DividendTab({ items, stocks, banks }) {
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [expandedSymbols, setExpandedSymbols] = useState(new Set());
   const defaultDivBank = banks?.find(b => b.name.toLowerCase().includes('idfc'))?.name || banks?.[0]?.name || '';
-  const [form, setForm] = useState({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank });
+  const [form, setForm] = useState({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank, reinvestmentOption: 'none', reinvestedAmount: '' });
 
   const now = new Date();
   const curFY = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
@@ -746,18 +747,30 @@ function DividendTab({ items, stocks, banks }) {
     const m = stocks.find(s => s.symbol === sym);
     setForm(p => ({ ...p, symbol: sym, stockName: m?.name || h?.stockName || sym, shares: h ? String(h.quantity) : '', totalAmount: h && p.dividendPerShare ? String((h.quantity * parseFloat(p.dividendPerShare)).toFixed(2)) : p.totalAmount }));
   };
+  const handleDivSymbolSelect = (stock) => {
+    const h = items.find(i => i.symbol === stock.symbol);
+    setForm(p => ({ ...p, symbol: stock.symbol, stockName: stock.name, shares: h ? String(h.quantity) : p.shares, totalAmount: h && p.dividendPerShare ? String((h.quantity * parseFloat(p.dividendPerShare)).toFixed(2)) : p.totalAmount }));
+  };
   const save = async () => {
     if (!form.symbol || !form.dividendPerShare) { toast.error('Fill symbol and dividend per share'); return; }
-    const data = { ...form, shares: parseFloat(form.shares) || 0, dividendPerShare: parseFloat(form.dividendPerShare), totalAmount: parseFloat(form.totalAmount) || (parseFloat(form.shares) * parseFloat(form.dividendPerShare)) };
+    const data = { ...form, shares: parseFloat(form.shares) || 0, dividendPerShare: parseFloat(form.dividendPerShare), totalAmount: parseFloat(form.totalAmount) || (parseFloat(form.shares) * parseFloat(form.dividendPerShare)), reinvestmentOption: form.reinvestmentOption || 'none', reinvestedAmount: form.reinvestmentOption === 'partial' ? (parseFloat(form.reinvestedAmount) || 0) : 0 };
     try {
       if (edit) { await dividendService.update(edit.id, data); toast.success('Updated!'); }
       else { await dividendService.create(data); toast.success('Added!'); }
       setModal(false); setEdit(null);
-      setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank });
+      setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank, reinvestmentOption: 'none', reinvestedAmount: '' });
       loadDividends();
     } catch { toast.error('Failed'); }
   };
   const del = async () => { try { await dividendService.delete(delId); toast.success('Deleted'); setDelId(null); loadDividends(); } catch { toast.error('Failed'); } };
+
+  // Reinvested amount for a dividend record: full = entire payout, partial = the amount specified, none = 0
+  const getReinvestedAmt = (d) => {
+    if (d.reinvestmentOption === 'full') return parseFloat(d.totalAmount) || 0;
+    if (d.reinvestmentOption === 'partial') return parseFloat(d.reinvestedAmount) || 0;
+    return 0;
+  };
+  const reinvestLabel = (opt) => opt === 'full' ? '🔁 Full' : opt === 'partial' ? '🔁 Partial' : '—';
 
   // Bulk delete selected rows
   const deleteSelected = async () => {
@@ -786,7 +799,24 @@ function DividendTab({ items, stocks, banks }) {
 
   const totalReceived = dividends.reduce((s, d) => s + (parseFloat(d.totalAmount) || 0), 0);
   const fyTotal = fyFiltered.reduce((s, d) => s + (parseFloat(d.totalAmount) || 0), 0);
-  const holdingSymbols = [...new Set(items.map(i => i.symbol || i.stockName))];
+  // Reinvestment aggregates — kept fully separate from regular payout totals above
+  const totalReinvested = dividends.reduce((s, d) => s + getReinvestedAmt(d), 0);
+  const fyReinvested = fyFiltered.reduce((s, d) => s + getReinvestedAmt(d), 0);
+  const reinvestedRecords = dividends.filter(d => d.reinvestmentOption === 'full' || d.reinvestmentOption === 'partial');
+  const reinvestBySymbol = {};
+  reinvestedRecords.forEach(d => {
+    const sym = d.symbol || d.stockName;
+    if (!reinvestBySymbol[sym]) reinvestBySymbol[sym] = { symbol: d.symbol, name: d.stockName, total: 0, count: 0 };
+    reinvestBySymbol[sym].total += getReinvestedAmt(d);
+    reinvestBySymbol[sym].count++;
+  });
+  const reinvestBySymbolList = Object.values(reinvestBySymbol).sort((a, b) => b.total - a.total);
+  // Merge portfolio investment symbols + Stock Master symbols (added via Settings)
+  // so the quick-picker shows ALL known symbols, not just those held in portfolio
+  const holdingSymbols = [...new Set([
+    ...items.map(i => i.symbol || i.stockName),
+    ...stocks.map(s => s.symbol),
+  ].filter(Boolean))].sort();
   const divSymbols = [...new Set(dividends.map(d => d.symbol || d.stockName).filter(Boolean))].sort();
   const searchMatchSymbols = divSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()));
   const toggleSym = sym => setCheckedSymbols(s => { const n = new Set(s); n.has(sym) ? n.delete(sym) : n.add(sym); return n; });
@@ -900,7 +930,7 @@ function DividendTab({ items, stocks, banks }) {
 
       {/* Sub-tabs */}
       <div className="flex items-center mb-3" style={{ borderBottom: '1px solid var(--border)', flexWrap: 'wrap', gap: 4 }}>
-        {[{ key: 'history', label: '📋 History' }, { key: 'summary', label: '📊 Symbol × Year' }].map(t => (
+        {[{ key: 'history', label: '📋 History' }, { key: 'summary', label: '📊 Symbol × Year' }, { key: 'reinvested', label: '🔁 Reinvested' }].map(t => (
           <button key={t.key} onClick={() => setSubTab(t.key)}
             style={{ padding: '7px 16px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', background: subTab === t.key ? 'var(--bg3)' : 'transparent', color: subTab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: subTab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
@@ -909,7 +939,7 @@ function DividendTab({ items, stocks, banks }) {
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', paddingBottom: 4 }}>
           {dividends.length > 0 && (
             <button className="btn btn-secondary btn-sm" onClick={() => exportCSV(
-              dividends.map(d => ({ date: d.date instanceof Date ? fmtDateInput(d.date) : (d.date || ''), symbol: d.symbol || '', stockName: d.stockName || '', shares: d.shares || 0, dividendPerShare: d.dividendPerShare || 0, totalAmount: d.totalAmount || 0, notes: d.notes || '' })),
+              dividends.map(d => ({ date: d.date instanceof Date ? fmtDateInput(d.date) : (d.date || ''), symbol: d.symbol || '', stockName: d.stockName || '', shares: d.shares || 0, dividendPerShare: d.dividendPerShare || 0, totalAmount: d.totalAmount || 0, reinvestmentOption: d.reinvestmentOption || 'none', reinvestedAmount: getReinvestedAmt(d), notes: d.notes || '' })),
               'dividends.csv'
             )}>⬇️ Export</button>
           )}
@@ -917,7 +947,7 @@ function DividendTab({ items, stocks, banks }) {
             {importing ? <><span className="spin" style={{ width: 11, height: 11, borderWidth: 2 }} /> {importProgress.total > 0 ? `${importProgress.current}/${importProgress.total}` : 'Importing...'}</> : '⬆️ Import'}
             <input type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCSVImport} disabled={importing} />
           </label>
-          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank }); setModal(true); }}>+ Add</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ date: today(), symbol: '', stockName: '', shares: '', dividendPerShare: '', totalAmount: '', notes: '', bankAccount: defaultDivBank, reinvestmentOption: 'none', reinvestedAmount: '' }); setModal(true); }}>+ Add</button>
         </div>
       </div>
 
@@ -972,6 +1002,7 @@ function DividendTab({ items, stocks, banks }) {
                       { key: 'shares', label: 'Shares',     align: 'right' },
                       { key: null,     label: 'Div/Share',  align: 'right' },
                       { key: 'total',  label: 'Total',      align: 'right' },
+                      { key: null,     label: 'Reinvestment Option', align: 'left' },
                       { key: null,     label: 'Notes',      align: 'left'  },
                       { key: null,     label: 'Bank',       align: 'left'  },
                       { key: null,     label: 'Actions',    align: 'left'  },
@@ -999,13 +1030,18 @@ function DividendTab({ items, stocks, banks }) {
                       <td style={{ textAlign: 'right' }} className="font-mono fs-12">{d.shares || '—'}</td>
                       <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(d.dividendPerShare)}</td>
                       <td style={{ textAlign: 'right' }}><span className="amt amt-g fw-700">{fmt(d.totalAmount)}</span></td>
+                      <td className="fs-12">
+                        {d.reinvestmentOption === 'full' && <span style={{ background: 'rgba(167,139,250,.12)', color: 'var(--purple)', padding: '2px 8px', borderRadius: 20, fontWeight: 700 }}>🔁 Full</span>}
+                        {d.reinvestmentOption === 'partial' && <span style={{ background: 'rgba(167,139,250,.12)', color: 'var(--purple)', padding: '2px 8px', borderRadius: 20, fontWeight: 700 }}>🔁 Partial · {fmt(getReinvestedAmt(d))}</span>}
+                        {(!d.reinvestmentOption || d.reinvestmentOption === 'none') && <span className="text-muted">—</span>}
+                      </td>
                       <td className="text-muted fs-12">{d.notes || '—'}</td>
                       <td className="fs-12">{d.bankAccount ? <span style={{ background: 'rgba(34,197,94,.1)', color: 'var(--green)', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>🏦 {d.bankAccount}</span> : <span className="text-muted">—</span>}</td>
                       <td><div className="actions">
                         <button className="btn-icon" onClick={() => {
                           setEdit(d);
                           const safeDate = d.date instanceof Date ? (isNaN(d.date.getTime()) ? today() : fmtDateInput(d.date)) : (d.date || today());
-                          setForm({ ...d, date: safeDate, shares: String(d.shares || ''), dividendPerShare: String(d.dividendPerShare || ''), totalAmount: String(d.totalAmount || '') });
+                          setForm({ ...d, date: safeDate, shares: String(d.shares || ''), dividendPerShare: String(d.dividendPerShare || ''), totalAmount: String(d.totalAmount || ''), reinvestmentOption: d.reinvestmentOption || 'none', reinvestedAmount: String(d.reinvestedAmount || '') });
                           setModal(true);
                         }}>✏️</button>
                         <button className="btn-icon" onClick={() => setDelId(d.id)}>🗑️</button>
@@ -1017,7 +1053,7 @@ function DividendTab({ items, stocks, banks }) {
                       TOTAL — {checkedSymbols.size > 0 || search ? 'filtered · ' : ''}{fyLabel(selFY)}
                     </td>
                     <td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="amt amt-g fw-800">{fmt(filteredTotal)}</span></td>
-                    <td colSpan={2} />
+                    <td colSpan={3} />
                   </tr></tfoot>
                 </table></div>
           }
@@ -1095,11 +1131,77 @@ function DividendTab({ items, stocks, banks }) {
             </div>
       )}
 
+      {/* Reinvested sub-tab — kept clearly separate from regular payout totals above */}
+      {subTab === 'reinvested' && (
+        <div>
+          <div className="stats mb-4">
+            {[
+              { icon: '🔁', label: 'Total Reinvested (All Time)', val: fmt(totalReinvested), c: 'var(--purple)' },
+              { icon: '📅', label: `Reinvested — ${fyLabel(selFY)}`, val: fmt(fyReinvested), c: 'var(--blue)' },
+              { icon: '📋', label: 'Reinvested Records', val: reinvestedRecords.length, c: 'var(--green)' },
+            ].map((s, i) => (
+              <div key={i} className="stat" style={{ '--c': s.c }}>
+                <div className="stat-icon">{s.icon}</div>
+                <div className="stat-val" style={{ color: s.c }}>{s.val}</div>
+                <div className="stat-label">{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {reinvestedRecords.length === 0 ? (
+            <div className="card"><div className="empty"><div className="empty-icon">🔁</div><div className="empty-title">No reinvestments recorded yet</div><div className="text-muted fs-12 mt-1">Set a "Reinvestment Option" of Full or Partial on a dividend entry to track it here.</div></div></div>
+          ) : (
+            <>
+              {/* By-symbol breakdown */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+                {reinvestBySymbolList.map((r, i) => (
+                  <div key={r.symbol || i} style={{ background: 'var(--bg3)', borderRadius: 8, padding: '8px 14px', minWidth: 140 }}>
+                    <div className="fs-12 fw-700" style={{ fontFamily: 'monospace' }}>{r.symbol || r.name}</div>
+                    <div className="fs-14 fw-800" style={{ color: 'var(--purple)' }}>{fmt(r.total)}</div>
+                    <div className="fs-11 text-muted">{r.count} reinvestment{r.count !== 1 ? 's' : ''}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Reinvestment records table */}
+              <div className="tbl-wrap">
+                <table className="tbl">
+                  <thead><tr>
+                    <th>Date</th>
+                    <th>Symbol</th>
+                    <th>Stock Name</th>
+                    <th style={{ textAlign: 'right' }}>Dividend Total</th>
+                    <th>Option</th>
+                    <th style={{ textAlign: 'right' }}>Reinvested Amount</th>
+                  </tr></thead>
+                  <tbody>
+                    {reinvestedRecords.sort((a, b) => new Date(b.date) - new Date(a.date)).map(d => (
+                      <tr key={d.id}>
+                        <td className="font-mono fs-12 text-muted">{fmtDate(d.date)}</td>
+                        <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, background: 'var(--bg3)', padding: '2px 8px', borderRadius: 6, color: 'var(--blue)' }}>{d.symbol || '—'}</span></td>
+                        <td className="fw-600 fs-13">{d.stockName}</td>
+                        <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(d.totalAmount)}</td>
+                        <td className="fs-12">{reinvestLabel(d.reinvestmentOption)}</td>
+                        <td style={{ textAlign: 'right' }}><span className="fw-800" style={{ color: 'var(--purple)' }}>{fmt(getReinvestedAmt(d))}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot><tr>
+                    <td colSpan={5} className="text-muted fs-12" style={{ padding: '10px 14px' }}>TOTAL REINVESTED — {fyLabel(selFY)}</td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="fw-900" style={{ color: 'var(--purple)' }}>{fmt(reinvestedRecords.filter(d => selFY === null || (new Date(d.date) >= fyStart(selFY) && new Date(d.date) <= fyEnd(selFY))).reduce((s, d) => s + getReinvestedAmt(d), 0))}</span></td>
+                  </tr></tfoot>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {modal && (
         <Modal title={edit ? '✏️ Edit Dividend' : '💸 Add Dividend'} onClose={() => { setModal(false); setEdit(null); }}>
           <div className="fg"><label className="fl">Date</label><DateStepper name="date" value={form.date} onChange={ch} /></div>
-          {holdingSymbols.length > 0 && <div className="fg"><label className="fl">Pick from holdings</label><HoldingSymbolPicker symbols={holdingSymbols} selected={form.symbol} onSelect={handlePickStock} /></div>}
-          <div className="frow"><div className="fg"><label className="fl">Symbol</label><input className="fi" name="symbol" value={form.symbol} onChange={ch} placeholder="e.g. TCS" style={{ fontFamily: 'monospace', fontWeight: 700 }} /></div><div className="fg"><label className="fl">Stock Name</label><input className="fi" name="stockName" value={form.stockName} onChange={ch} placeholder="Auto-filled" /></div></div>
+          {holdingSymbols.length > 0 && <div className="fg"><label className="fl">Quick Pick <span className="text-muted fs-11">(holdings + stock master)</span></label><HoldingSymbolPicker symbols={holdingSymbols} selected={form.symbol} onSelect={handlePickStock} /></div>}
+          <div className="frow"><div className="fg"><label className="fl">Symbol {form.stockName && <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600 }}>✓ {form.stockName}</span>}</label><SymbolDropdown stocks={stocks} value={form.symbol} onChange={val => setForm(p => ({ ...p, symbol: val }))} onSelect={handleDivSymbolSelect} /></div><div className="fg"><label className="fl">Stock Name</label><input className="fi" name="stockName" value={form.stockName} onChange={ch} placeholder="Auto-filled" /></div></div>
           <div className="frow"><div className="fg"><label className="fl">No. of Shares</label><input className="fi" type="number" name="shares" value={form.shares} onChange={e => handleSharesOrDPS('shares', e.target.value)} placeholder="e.g. 100" /></div><div className="fg"><label className="fl">Dividend/Share (Rs)</label><input className="fi" type="number" name="dividendPerShare" value={form.dividendPerShare} onChange={e => handleSharesOrDPS('dividendPerShare', e.target.value)} step="0.01" required /></div></div>
           <div className="fg"><label className="fl">Total Amount (Rs) <span style={{ color: 'var(--green)', fontSize: 11 }}>auto-calc</span></label><div style={{ position: 'relative' }}><span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span><input className="fi" type="number" name="totalAmount" value={form.totalAmount} onChange={ch} style={{ paddingLeft: 28, fontWeight: 700 }} /></div>{form.shares && form.dividendPerShare && <div className="fs-11 amt-g mt-1">= {form.shares} × Rs {form.dividendPerShare} = Rs {(parseFloat(form.shares) * parseFloat(form.dividendPerShare)).toFixed(2)}</div>}</div>
           {banks && banks.length > 0 && (
@@ -1116,6 +1218,24 @@ function DividendTab({ items, stocks, banks }) {
             </div>
           )}
           <div className="fg"><label className="fl">Notes</label><input className="fi" name="notes" value={form.notes} onChange={ch} placeholder="e.g. Q3 FY25 interim dividend" /></div>
+          <div className="frow">
+            <div className="fg">
+              <label className="fl">Reinvestment Option</label>
+              <select className="fs" name="reinvestmentOption" value={form.reinvestmentOption || 'none'} onChange={ch}>
+                <option value="none">None — payout only</option>
+                <option value="full">Full — entire dividend reinvested</option>
+                <option value="partial">Partial — part of the dividend reinvested</option>
+              </select>
+            </div>
+            {form.reinvestmentOption === 'partial' && (
+              <div className="fg"><label className="fl">Reinvested Amount (Rs)</label>
+                <input className="fi" type="number" name="reinvestedAmount" value={form.reinvestedAmount} onChange={ch} placeholder="e.g. 500" min="0" max={form.totalAmount || undefined} />
+              </div>
+            )}
+          </div>
+          {form.reinvestmentOption === 'full' && form.totalAmount && (
+            <div className="fs-11" style={{ color: 'var(--purple)', marginTop: -8, marginBottom: 8 }}>🔁 Entire {fmt(parseFloat(form.totalAmount))} will be recorded as reinvested</div>
+          )}
           <div className="modal-foot"><button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button><button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add'}</button></div>
         </Modal>
       )}
@@ -1137,6 +1257,7 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
   const [checkedSymbols, setCheckedSymbols] = useState(new Set());
   const [confirmDel, setConfirmDel] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const years = [];
   for (let y = 2022; y <= now.getFullYear(); y++) years.push(y);
@@ -1203,6 +1324,22 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
   const totalValue = sorted.reduce((s, i) => s + i.currentValue, 0);
   const totalPnL = totalValue - totalInvested;
   const uniqueBrokers = [...new Set(items.map(i => i.brokerName).filter(Boolean))];
+
+  // Stock-wise summary: group filtered/sorted rows by symbol
+  const stockSummary = (() => {
+    const map = {};
+    sorted.forEach(i => {
+      const sym = i.symbol || i.stockName || '—';
+      if (!map[sym]) map[sym] = { symbol: sym, stockName: i.stockName, count: 0, qty: 0, invested: 0, value: 0 };
+      map[sym].count += 1;
+      map[sym].qty += i.quantity || 0;
+      map[sym].invested += i.totalInvested || 0;
+      map[sym].value += i.currentValue || 0;
+    });
+    return Object.values(map)
+      .map(s => ({ ...s, pnl: s.value - s.invested, avgPrice: s.qty > 0 ? s.invested / s.qty : 0, allocation: totalInvested > 0 ? ((s.invested / totalInvested) * 100).toFixed(2) : '0.00' }))
+      .sort((a, b) => b.invested - a.invested);
+  })();
 
   return (
     <div>
@@ -1297,6 +1434,65 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
               <div style={{ fontSize: 14, fontWeight: 800, color: s.c }}>{s.val}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Stock-wise Summary Table (collapsible) */}
+      {sorted.length > 0 && (
+        <div className="card" style={{ marginBottom: 12, padding: 0, overflow: 'hidden' }}>
+          <div
+            onClick={() => setShowSummary(v => !v)}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span className="fw-700 fs-13">📊 Stock Summary <span className="text-muted fw-400">({stockSummary.length} stocks)</span></span>
+            <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{showSummary ? '▲ Hide' : '▼ Show'}</span>
+          </div>
+          {showSummary && (
+            <div className="tbl-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Stock</th>
+                    <th style={{ textAlign: 'right' }}>Count</th>
+                    <th style={{ textAlign: 'right' }}>Qty</th>
+                    <th style={{ textAlign: 'right' }}>Avg Price</th>
+                    <th style={{ textAlign: 'right' }}>Invested</th>
+                    <th style={{ textAlign: 'right' }}>Value</th>
+                    <th style={{ textAlign: 'right' }}>P&L</th>
+                    <th style={{ textAlign: 'right' }}>Alloc%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockSummary.map((s, idx) => (
+                    <tr key={s.symbol}>
+                      <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>{(s.symbol || '—').replace(/^NSE:/i, '')}</span></td>
+                      <td className="fw-600 fs-13">{s.stockName}</td>
+                      <td style={{ textAlign: 'right' }} className="font-mono fs-12">{s.count}</td>
+                      <td style={{ textAlign: 'right' }} className="font-mono fs-12">{s.qty}</td>
+                      <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(s.avgPrice)}</td>
+                      <td style={{ textAlign: 'right' }}><span className="amt">{fmt(s.invested)}</span></td>
+                      <td style={{ textAlign: 'right' }}><span className="amt">{fmt(s.value)}</span></td>
+                      <td style={{ textAlign: 'right' }}><span className={`amt ${s.pnl >= 0 ? 'amt-g' : 'amt-r'}`}>{s.pnl >= 0 ? '+' : ''}{fmt(s.pnl)}</span></td>
+                      <td style={{ textAlign: 'right' }}><span style={{ background: PALETTE[idx % PALETTE.length] + '22', color: PALETTE[idx % PALETTE.length], padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{s.allocation}%</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={2} className="text-muted fs-12" style={{ padding: '10px 14px' }}>TOTAL ({stockSummary.length} stocks)</td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }} className="font-mono fs-12 fw-800">{stockSummary.reduce((s, x) => s + x.count, 0)}</td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }} className="font-mono fs-12 fw-800">{stockSummary.reduce((s, x) => s + x.qty, 0)}</td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }} className="text-muted fs-12">—</td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="amt fw-800">{fmt(totalInvested)}</span></td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }}><span className="amt fw-800">{fmt(totalValue)}</span></td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }}><span className={`amt fw-800 ${totalPnL >= 0 ? 'amt-g' : 'amt-r'}`}>{totalPnL >= 0 ? '+' : ''}{fmt(totalPnL)}</span></td>
+                    <td style={{ textAlign: 'right', padding: '10px 14px' }} className="fw-800 fs-12">100%</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -1468,7 +1664,6 @@ function LockedScreen({ page, onUnlock }) {
 // ─── Main Portfolio Page ───────────────────────────────────
 export default function PortfolioPage() {
   const [unlocked, setUnlocked] = useState(() => !pinService.getCached('portfolio'));
-  const [contractsUnlocked, setContractsUnlocked] = useState(() => !pinService.getCached('contracts'));
   const [items, setItems] = useState([]);
   const [stocks, setStocks] = useState([]);
   const [brokers, setBrokers] = useState([]);
@@ -1480,6 +1675,7 @@ export default function PortfolioPage() {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('holdings');
   const [summarySort, setSummarySort] = useState({ field: 'value', dir: 'desc' });
+  const [expandedCategories, setExpandedCategories] = useState(new Set());
   const toggleSummarySort = (field) => setSummarySort(s => ({ field, dir: s.field === field && s.dir === 'desc' ? 'asc' : 'desc' }));
   const [livePrices, setLivePrices] = useState({});
   const [liveLoading, setLiveLoading] = useState(false);
@@ -1488,6 +1684,12 @@ export default function PortfolioPage() {
   const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('fintrack_gas_url') || '');
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState('');
+
+  // ── Contract Settings (PDF Password) ────────────────────
+  const [pdfPassword,        setPdfPassword]        = useState('');
+  const [showPdfPassword,    setShowPdfPassword]    = useState(false);
+  const [contractSettingsLoading, setContractSettingsLoading] = useState(false);
+  const [savingContractSettings,  setSavingContractSettings]  = useState(false);
 
   const load = async (invalidateCache = false) => {
     setLoading(true);
@@ -1509,7 +1711,44 @@ export default function PortfolioPage() {
       if (bankSnap) setBanks(bankSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)));
     } catch { toast.error('Failed to load'); setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); loadContractSettings(); }, []);
+
+  // ── Contract Settings helpers ──────────────────────────
+  const loadContractSettings = async () => {
+    setContractSettingsLoading(true);
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+      const snap = await getDoc(doc(db, 'contractSettings', uid));
+      if (snap.exists()) {
+        const data = snap.data();
+        setPdfPassword(data.pdfPassword || '');
+      }
+    } catch (e) {
+      console.error('Failed to load contract settings', e);
+    } finally {
+      setContractSettingsLoading(false);
+    }
+  };
+
+  const saveContractSettings = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) { toast.error('Not logged in'); return; }
+    setSavingContractSettings(true);
+    try {
+      await setDoc(doc(db, 'contractSettings', uid), {
+        pdfPassword: pdfPassword.trim(),
+        updatedAt:   new Date().toISOString(),
+        uid,
+      }, { merge: true });
+      toast.success('PDF password saved!');
+    } catch (e) {
+      console.error(e);
+      toast.error('Failed to save settings');
+    } finally {
+      setSavingContractSettings(false);
+    }
+  };
 
   const saveGasUrl = () => {
     const url = urlInput.trim();
@@ -1861,7 +2100,7 @@ export default function PortfolioPage() {
 
       {/* Tabs */}
       <div style={{ borderBottom: '1px solid var(--border)', overflowX: 'auto', display: 'flex', gap: 2, marginTop: 16, marginBottom: 16, WebkitOverflowScrolling: 'touch' }}>
-        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }, { key: 'contracts', label: '📄 Contracts' }].map(t => (
+        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }, { key: 'contracts', label: '📄 Contracts' }, { key: 'ecas', label: '📑 eCAS' }].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 12px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
@@ -1939,6 +2178,178 @@ export default function PortfolioPage() {
               </ResponsiveContainer>
             </div>
           </div>
+
+          {/* ── Category-wise Breakdown ── */}
+          {(() => {
+            const catMap = {};
+            itemsWithAlloc.forEach(i => {
+              const cat = i.brokerName || 'Unassigned';
+              if (!catMap[cat]) catMap[cat] = { name: cat, stocks: {}, invested: 0, value: 0 };
+              const sym = i.symbol || i.stockName;
+              if (!catMap[cat].stocks[sym]) catMap[cat].stocks[sym] = { symbol: i.symbol || sym, name: i.stockName, qty: 0, invested: 0, value: 0, currentPrice: 0 };
+              catMap[cat].stocks[sym].qty        += i.quantity;
+              catMap[cat].stocks[sym].invested   += i.totalInvested;
+              catMap[cat].stocks[sym].value      += i.currentValue;
+              catMap[cat].stocks[sym].currentPrice = i.currentPrice;
+              catMap[cat].invested += i.totalInvested;
+              catMap[cat].value    += i.currentValue;
+            });
+            const cats = Object.values(catMap).sort((a, b) => b.value - a.value);
+            const grandTotal = cats.reduce((s, c) => s + c.value, 0);
+            const toggleCat = name => setExpandedCategories(prev => {
+              const next = new Set(prev); next.has(name) ? next.delete(name) : next.add(name); return next;
+            });
+            return (
+              <div className="card" style={{ marginTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                  <div className="card-title" style={{ marginBottom: 0 }}>📊 Category-wise Breakdown</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }}
+                      onClick={() => setExpandedCategories(new Set(cats.map(c => c.name)))}>
+                      Expand All
+                    </button>
+                    <button className="btn btn-secondary btn-sm" style={{ fontSize: 11 }}
+                      onClick={() => setExpandedCategories(new Set())}>
+                      Collapse All
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {cats.map((cat, catIdx) => {
+                    const isOpen  = expandedCategories.has(cat.name);
+                    const pnl     = cat.value - cat.invested;
+                    const pct     = grandTotal > 0 ? ((cat.value / grandTotal) * 100).toFixed(1) : '0';
+                    const stocks  = Object.values(cat.stocks).sort((a, b) => b.value - a.value);
+                    const catColor = PALETTE[catIdx % PALETTE.length];
+                    return (
+                      <div key={cat.name} style={{ border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+                        {/* ── Category header row ── */}
+                        <div onClick={() => toggleCat(cat.name)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', cursor: 'pointer',
+                            background: isOpen ? 'var(--bg3)' : 'var(--bg2)', transition: 'background .15s',
+                            borderLeft: `3px solid ${catColor}` }}>
+                          {/* +/- toggle */}
+                          <span style={{ width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${catColor}`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 16, fontWeight: 900, color: catColor, flexShrink: 0, lineHeight: 1 }}>
+                            {isOpen ? '−' : '+'}
+                          </span>
+                          {/* Category name + stock count */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="fw-800 fs-13">{cat.name}</div>
+                            <div className="fs-11 text-muted">{stocks.length} stock{stocks.length !== 1 ? 's' : ''}</div>
+                          </div>
+                          {/* Allocation bar */}
+                          <div style={{ width: 70, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            <div style={{ height: 4, borderRadius: 99, background: 'var(--border2)', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${pct}%`, background: catColor, borderRadius: 99 }} />
+                            </div>
+                            <div className="fs-10 text-muted" style={{ textAlign: 'right' }}>{pct}%</div>
+                          </div>
+                          {/* Stats */}
+                          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexShrink: 0 }}>
+                            <div style={{ textAlign: 'right' }}>
+                              <div className="fs-10 text-muted">Invested</div>
+                              <div className="fw-700 fs-12">{fmt(cat.invested)}</div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div className="fs-10 text-muted">Current</div>
+                              <div className="fw-700 fs-12">{fmt(cat.value)}</div>
+                            </div>
+                            <div style={{ textAlign: 'right', minWidth: 64 }}>
+                              <div className="fs-10 text-muted">P&amp;L</div>
+                              <div className={`fw-800 fs-12 ${pnl >= 0 ? 'amt-g' : 'amt-r'}`}>
+                                {pnl >= 0 ? '+' : ''}{fmt(pnl)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* ── Expanded stock rows ── */}
+                        {isOpen && (
+                          <div style={{ borderTop: '1px solid var(--border)' }}>
+                            {stocks.map((s, idx) => {
+                              const sPnl = s.value - s.invested;
+                              const sPct = cat.value > 0 ? ((s.value / cat.value) * 100).toFixed(1) : '0';
+                              const avgBuy = s.qty > 0 ? s.invested / s.qty : 0;
+                              return (
+                                <div key={s.symbol}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 10,
+                                    padding: '9px 14px 9px 52px',
+                                    borderBottom: idx < stocks.length - 1 ? '1px solid var(--border)' : 'none',
+                                    background: idx % 2 === 0 ? 'transparent' : 'rgba(0,0,0,.02)' }}>
+                                  <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 11,
+                                    background: catColor + '18', padding: '2px 8px', borderRadius: 6,
+                                    color: catColor, minWidth: 72, textAlign: 'center', flexShrink: 0 }}>
+                                    {s.symbol}
+                                  </span>
+                                  <span className="fs-12 text-muted" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.name}>
+                                    {s.name}
+                                  </span>
+                                  <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                    <div style={{ textAlign: 'right', minWidth: 40 }}>
+                                      <div className="fs-10 text-muted">Qty</div>
+                                      <div className="fw-700 fs-12 font-mono">{s.qty.toLocaleString('en-IN')}</div>
+                                    </div>
+                                    <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                      <div className="fs-10 text-muted">Avg Buy</div>
+                                      <div className="fw-700 fs-12 font-mono">{fmt(avgBuy)}</div>
+                                    </div>
+                                    <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                      <div className="fs-10 text-muted">Invested</div>
+                                      <div className="fw-700 fs-12">{fmt(s.invested)}</div>
+                                    </div>
+                                    <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                      <div className="fs-10 text-muted">Current</div>
+                                      <div className="fw-700 fs-12">{fmt(s.value)}</div>
+                                    </div>
+                                    <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                      <div className="fs-10 text-muted">P&amp;L</div>
+                                      <div className={`fw-800 fs-12 ${sPnl >= 0 ? 'amt-g' : 'amt-r'}`}>
+                                        {sPnl >= 0 ? '+' : ''}{fmt(sPnl)}
+                                      </div>
+                                    </div>
+                                    <span style={{ background: 'var(--bg3)', color: 'var(--t3)', padding: '2px 8px',
+                                      borderRadius: 20, fontSize: 11, fontWeight: 700, minWidth: 40, textAlign: 'center' }}>
+                                      {sPct}%
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {/* Category subtotal row */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px 8px 52px',
+                              background: catColor + '10', borderTop: '1px solid var(--border)' }}>
+                              <span className="fs-11 fw-700 text-muted" style={{ flex: 1 }}>TOTAL — {cat.name}</span>
+                              <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexShrink: 0 }}>
+                                <div style={{ minWidth: 40 }} />
+                                <div style={{ minWidth: 72 }} />
+                                <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                  <span className="fw-800 fs-12 amt">{fmt(cat.invested)}</span>
+                                </div>
+                                <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                  <span className="fw-800 fs-12 amt">{fmt(cat.value)}</span>
+                                </div>
+                                <div style={{ textAlign: 'right', minWidth: 72 }}>
+                                  <span className={`fw-800 fs-12 ${pnl >= 0 ? 'amt-g' : 'amt-r'}`}>
+                                    {pnl >= 0 ? '+' : ''}{fmt(pnl)}
+                                  </span>
+                                </div>
+                                <span style={{ background: catColor + '22', color: catColor, padding: '2px 8px',
+                                  borderRadius: 20, fontSize: 11, fontWeight: 800, minWidth: 40, textAlign: 'center' }}>
+                                  {pct}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Stock-wise Summary Table ── */}
           <div className="card" style={{ marginTop: 16 }}>
@@ -2031,14 +2442,144 @@ export default function PortfolioPage() {
       {tab === 'broker' && <BrokerReportTab items={itemsWithAlloc} brokers={brokers} />}
       {tab === 'dividends' && <DividendTab items={itemsWithAlloc} stocks={stocks} banks={banks} />}
       {tab === 'contracts' && (
-        contractsUnlocked
-          ? (
-            <div className="card contracts-card" style={{ padding: 0, overflow: 'visible', minHeight: 'min(520px, 80vh)', overflowX: 'hidden' }}>
-              <ContractUploader onTradesSaved={handleContractTrades} />
+        <div>
+          {/* ── Contract Settings Card ── */}
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="flex items-center gap-2 mb-3">
+              <span style={{ fontSize: 18 }}>🔑</span>
+              <div>
+                <div className="fw-700 fs-14">PDF Password</div>
+                <div className="fs-11 text-muted">Saved password auto-fills when uploading a protected contract PDF.</div>
+              </div>
+              {contractSettingsLoading && <span className="spin" style={{ width: 14, height: 14, borderWidth: 2, marginLeft: 'auto' }} />}
             </div>
-          ) : (
-            <LockedScreen page="contracts" onUnlock={() => setContractsUnlocked(true)} />
-          )
+
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+              {/* PDF Password input */}
+              <div className="fg" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+                <label className="fl">
+                  PDF Password
+                  <span className="text-muted fw-400 fs-11" style={{ marginLeft: 6 }}>leave blank if no password</span>
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}>🔒</span>
+                  <input
+                    className="fi"
+                    type={showPdfPassword ? 'text' : 'password'}
+                    style={{ paddingLeft: 32, paddingRight: 40, fontFamily: 'monospace', fontWeight: 700, letterSpacing: showPdfPassword ? 0 : 3 }}
+                    placeholder="Leave blank if no password"
+                    value={pdfPassword}
+                    onChange={e => setPdfPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPdfPassword(v => !v)}
+                    style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, color: 'var(--t3)', padding: 4 }}
+                    title={showPdfPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPdfPassword ? '🙈' : '👁'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Save button */}
+              <button
+                className="btn btn-primary"
+                onClick={saveContractSettings}
+                disabled={savingContractSettings || contractSettingsLoading}
+                style={{ minWidth: 130, marginBottom: 0 }}
+              >
+                {savingContractSettings
+                  ? <><span className="spin" style={{ width: 12, height: 12, borderWidth: 2 }} /> Saving...</>
+                  : '💾 Save Password'
+                }
+              </button>
+            </div>
+
+            {pdfPassword && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>
+                ✅ Password saved — will auto-fill when you upload a protected PDF
+              </div>
+            )}
+          </div>
+
+          {/* ── Contract Uploader ── */}
+          <div className="card contracts-card" style={{ padding: 0, overflow: 'visible', minHeight: 'min(520px, 80vh)', overflowX: 'hidden' }}>
+            <ContractUploader onTradesSaved={handleContractTrades} pdfPassword={pdfPassword} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'ecas' && (
+        <div>
+          {/* ── eCAS Settings Card (reuses the same saved PDF password) ── */}
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="flex items-center gap-2 mb-3">
+              <span style={{ fontSize: 18 }}>🔑</span>
+              <div>
+                <div className="fw-700 fs-14">eCAS PDF Password</div>
+                <div className="fs-11 text-muted">
+                  Same password used for Contracts. Saved once — auto-fills the eCAS analyzer below.
+                </div>
+              </div>
+              {contractSettingsLoading && <span className="spin" style={{ width: 14, height: 14, borderWidth: 2, marginLeft: 'auto' }} />}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+              <div className="fg" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+                <label className="fl">
+                  PDF Password
+                  <span className="text-muted fw-400 fs-11" style={{ marginLeft: 6 }}>leave blank if not protected</span>
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}>🔒</span>
+                  <input
+                    className="fi"
+                    type={showPdfPassword ? 'text' : 'password'}
+                    style={{ paddingLeft: 32, paddingRight: 40, fontFamily: 'monospace', fontWeight: 700, letterSpacing: showPdfPassword ? 0 : 3 }}
+                    placeholder="Leave blank if no password"
+                    value={pdfPassword}
+                    onChange={e => setPdfPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPdfPassword(v => !v)}
+                    style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, color: 'var(--t3)', padding: 4 }}
+                    title={showPdfPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPdfPassword ? '🙈' : '👁'}
+                  </button>
+                </div>
+              </div>
+              <button
+                className="btn btn-primary"
+                onClick={saveContractSettings}
+                disabled={savingContractSettings || contractSettingsLoading}
+                style={{ minWidth: 130, marginBottom: 0 }}
+              >
+                {savingContractSettings
+                  ? <><span className="spin" style={{ width: 12, height: 12, borderWidth: 2 }} /> Saving...</>
+                  : '💾 Save Password'
+                }
+              </button>
+            </div>
+
+            {pdfPassword && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>
+                ✅ Password saved — auto-fills the analyzer below
+              </div>
+            )}
+          </div>
+
+          {/* ── eCAS Analyzer ── */}
+          <ECASAnalyzer
+            pdfPassword={pdfPassword}
+            onDataExtracted={(data) => {
+              // Optional: you can store extracted eCAS data in state here if needed
+              console.log('eCAS extracted:', data.holdings.length, 'schemes');
+            }}
+          />
+        </div>
       )}
 
       {modal && <Modal title={edit ? '✏️ Edit Stock' : '➕ Add Stock'} onClose={() => { setModal(false); setEdit(null); }}>

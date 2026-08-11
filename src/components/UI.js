@@ -65,6 +65,20 @@ export function Layout({ children }) {
   const [sOpen, setSOpen] = useState(false);
   return (
     <div className="layout">
+      <style>{`
+        .tbl thead th {
+          background: linear-gradient(135deg, rgba(56, 139, 253, 0.15), rgba(34, 197, 94, 0.08)) !important;
+          color: #4d9eff !important;
+          font-weight: 800 !important;
+          font-size: 12px !important;
+          text-transform: uppercase !important;
+          letter-spacing: 0.5px !important;
+          border-bottom: 2px solid rgba(77, 158, 255, 0.3) !important;
+          padding: 11px 14px !important;
+        }
+        .tbl thead th:first-child { border-radius: 10px 0 0 0; }
+        .tbl thead th:last-child  { border-radius: 0 10px 0 0; }
+      `}</style>
       <Sidebar open={sOpen} onClose={() => setSOpen(false)} />
       <div className="main">
         <header className="topbar">

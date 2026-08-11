@@ -5,6 +5,7 @@ import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import { differenceInDays } from 'date-fns';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
 import toast from 'react-hot-toast';
+import * as XLSX from 'xlsx';
 
 import { pinService } from '../utils/dbService';
 
@@ -346,6 +347,188 @@ function PropertyCalc() {
 // 🔑 goldapi.io API key — get yours free at https://www.goldapi.io
 const GOLD_API_KEY = 'goldapi-REPLACE_WITH_YOUR_KEY'; // ← paste your key here
 
+// ── Gold import helpers ─────────────────────────────────────
+// Turn a raw CSV/Excel cell into 'yyyy-mm-dd'. Handles Excel serial
+// dates, JS Date objects (from xlsx cellDates), and common string
+// formats (dd/mm/yyyy, mm/dd/yyyy, yyyy-mm-dd).
+function parseImportDate(raw) {
+  if (raw === undefined || raw === null || raw === '') return today();
+  if (raw instanceof Date && !isNaN(raw.getTime())) return fmtDateInput(raw);
+  if (typeof raw === 'number') {
+    // Excel serial date (days since 1899-12-30)
+    const d = new Date(Math.round((raw - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) return fmtDateInput(d);
+  }
+  const str = String(raw).trim();
+  // dd/mm/yyyy or dd-mm-yyyy
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m) {
+    let [, a, b, y] = m;
+    if (y.length === 2) y = `20${y}`;
+    const d = new Date(`${y}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`);
+    if (!isNaN(d.getTime())) return fmtDateInput(d);
+  }
+  const d2 = new Date(str);
+  if (!isNaN(d2.getTime())) return fmtDateInput(d2);
+  return today();
+}
+
+// Match a header cell against a list of accepted names (case/space-insensitive)
+function matchHeader(headers, ...aliases) {
+  const norm = h => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const wanted = aliases.map(norm);
+  return headers.find(h => wanted.includes(norm(h)));
+}
+
+// Parse a CSV/XLSX File into normalized gold-entry rows.
+// Expected columns (any order, header names flexible):
+//   Date | Item / Description | Price per Gram (optional) | Total Amount
+async function parseGoldImportFile(file) {
+  const buf = await file.arrayBuffer();
+  const isCsv = /\.csv$/i.test(file.name);
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (rows.length === 0) return [];
+
+  const headers = Object.keys(rows[0]);
+  const dateKey   = matchHeader(headers, 'date', 'purchasedate');
+  const itemKey   = matchHeader(headers, 'item', 'items', 'itemname');
+  const descKey   = matchHeader(headers, 'description', 'desc', 'notes');
+  const priceKey  = matchHeader(headers, 'priceGram', 'pricepergram', 'rate', 'ratepergram', 'pricePerG');
+  const amountKey = matchHeader(headers, 'totalAmount', 'totalamountbrought', 'amount', 'amountbrought', 'totalpaid', 'total');
+
+  return rows.map(row => {
+    const item      = itemKey ? String(row[itemKey] || '').trim() : '';
+    const desc      = descKey ? String(row[descKey] || '').trim() : '';
+    const priceGram = priceKey ? parseFloat(row[priceKey]) || 0 : 0;
+    const amount    = amountKey ? parseFloat(row[amountKey]) || 0 : 0;
+    const grams     = priceGram > 0 && amount > 0 ? amount / priceGram : 0;
+    return {
+      purchaseDate: dateKey ? parseImportDate(row[dateKey]) : today(),
+      description: [item, desc].filter(Boolean).join(' — '),
+      purchasePrice: priceGram,
+      totalAmount: amount,
+      grams,
+      gst: 0,
+      wastage: 0,
+    };
+  }).filter(r => r.totalAmount > 0 || r.grams > 0); // skip blank rows
+}
+
+// ─── Import Gold CSV/Excel Modal ────────────────────────────
+function ImportGoldModal({ onClose, onImported }) {
+  const [rows, setRows] = useState([]);
+  const [fileName, setFileName] = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setFileName(file.name);
+    setParsing(true);
+    try {
+      const parsed = await parseGoldImportFile(file);
+      if (parsed.length === 0) toast.error('No valid rows found — check your column headers');
+      setRows(parsed);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not read that file. Use .csv or .xlsx');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const updateRow = (i, field, val) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [field]: val } : r));
+  const removeRow = (i) => setRows(p => p.filter((_, idx) => idx !== i));
+
+  const confirmImport = async () => {
+    if (rows.length === 0) return;
+    setSaving(true);
+    try {
+      for (const r of rows) {
+        await goldService.create({
+          purchaseDate: r.purchaseDate,
+          description: r.description,
+          purchasePrice: parseFloat(r.purchasePrice) || 0,
+          totalAmount: parseFloat(r.totalAmount) || 0,
+          grams: parseFloat(r.grams) || 0,
+          gst: 0,
+          wastage: 0,
+        });
+      }
+      toast.success(`Imported ${rows.length} gold entr${rows.length === 1 ? 'y' : 'ies'}!`);
+      onImported();
+    } catch (e) {
+      console.error(e);
+      toast.error('Import failed partway — check what was added');
+      onImported();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="📥 Import Gold Entries" onClose={onClose}>
+      <div className="text-muted fs-12 mb-3">
+        Upload a CSV or Excel file with columns: <b>Date</b>, <b>Item/Description</b>, <b>Price per Gram</b> (optional), <b>Total Amount</b>.
+        If price per gram is left out, weight (grams) won't be tracked for that row — only the amount spent.
+      </div>
+      <input
+        className="fi"
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        onChange={e => handleFile(e.target.files?.[0])}
+        style={{ marginBottom: 12 }}
+      />
+      {parsing && <div className="spin-center" style={{ height: 40 }}><div className="spin" /></div>}
+
+      {rows.length > 0 && (
+        <>
+          <div className="fs-12 fw-700 mb-2">Preview — {fileName} ({rows.length} rows)</div>
+          <div className="tbl-wrap" style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Description</th>
+                  <th style={{ textAlign: 'right' }}>Price/g</th>
+                  <th style={{ textAlign: 'right' }}>Total Amount</th>
+                  <th style={{ textAlign: 'right' }}>Grams (calc)</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>
+                    <td><input className="fi" type="date" value={r.purchaseDate} onChange={e => updateRow(i, 'purchaseDate', e.target.value)} style={{ fontSize: 12, padding: '4px 6px' }} /></td>
+                    <td><input className="fi" type="text" value={r.description} onChange={e => updateRow(i, 'description', e.target.value)} style={{ fontSize: 12, padding: '4px 6px' }} /></td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input className="fi" type="number" value={r.purchasePrice || ''} onChange={e => updateRow(i, 'purchasePrice', e.target.value)} style={{ fontSize: 12, padding: '4px 6px', width: 80, textAlign: 'right' }} placeholder="—" />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input className="fi" type="number" value={r.totalAmount || ''} onChange={e => updateRow(i, 'totalAmount', e.target.value)} style={{ fontSize: 12, padding: '4px 6px', width: 90, textAlign: 'right' }} placeholder="—" />
+                    </td>
+                    <td style={{ textAlign: 'right' }} className="fs-12 text-muted">{parseFloat(r.grams) > 0 ? `${parseFloat(r.grams).toFixed(3)} g` : '—'}</td>
+                    <td><button onClick={() => removeRow(i)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 14 }}>✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={confirmImport} disabled={rows.length === 0 || saving}>
+          {saving ? 'Importing…' : `Import ${rows.length || ''} Entr${rows.length === 1 ? 'y' : 'ies'}`}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function GoldTracker() {
   const [entries, setEntries]         = useState([]);
   const [loading, setLoading]         = useState(true);
@@ -354,9 +537,10 @@ function GoldTracker() {
   const [rateSource, setRateSource]   = useState(localStorage.getItem('fintrack_gold_rate_source') || '');
   const [rateTime, setRateTime]       = useState(localStorage.getItem('fintrack_gold_rate_time') || '');
   const [modal, setModal]             = useState(false);
+  const [importModal, setImportModal] = useState(false);
   const [edit, setEdit]               = useState(null);
   const [delId, setDelId]             = useState(null);
-  const [form, setForm]               = useState({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' });
+  const [form, setForm]               = useState({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '', totalAmount: '' });
 
   useEffect(() => { load(); }, []);
 
@@ -413,12 +597,19 @@ function GoldTracker() {
   };
 
   const save = async () => {
-    if (!form.grams || !form.purchasePrice) { toast.error('Fill all fields'); return; }
+    const hasWeight = form.grams && form.purchasePrice;
+    const hasAmountOnly = !hasWeight && parseFloat(form.totalAmount) > 0;
+    if (!hasWeight && !hasAmountOnly) { toast.error('Enter weight + price/gram, or at least a total amount'); return; }
     try {
+      // If grams wasn't entered but we know price/gram and total amount, derive it
+      const priceGram = parseFloat(form.purchasePrice) || 0;
+      const totalAmt  = parseFloat(form.totalAmount) || 0;
+      const grams     = form.grams ? parseFloat(form.grams) : (priceGram > 0 && totalAmt > 0 ? totalAmt / priceGram : 0);
       const payload = {
         ...form,
-        grams: parseFloat(form.grams),
-        purchasePrice: parseFloat(form.purchasePrice),
+        grams,
+        purchasePrice: priceGram,
+        totalAmount: totalAmt,
         gst: parseFloat(form.gst) || 0,
         wastage: parseFloat(form.wastage) || 0,
       };
@@ -430,7 +621,7 @@ function GoldTracker() {
         toast.success('Added!');
       }
       setModal(false); setEdit(null);
-      setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' });
+      setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '', totalAmount: '' });
       load();
     } catch { toast.error('Failed to save'); }
   };
@@ -452,9 +643,12 @@ function GoldTracker() {
   const curRate        = parseFloat(currentRate) || 0;
   const totalGrams     = entries.reduce((s, e) => s + (parseFloat(e.grams) || 0), 0);
 
-  // Total cost = base + GST (what you actually paid)
+  // Total cost = base + GST (what you actually paid).
+  // Entries imported with only a total amount (no known weight) fall back to that amount.
   const totalInvested  = entries.reduce((s, e) => {
-    const base = (parseFloat(e.grams) || 0) * (parseFloat(e.purchasePrice) || 0);
+    const grams = parseFloat(e.grams) || 0;
+    if (grams === 0) return s + (parseFloat(e.totalAmount) || 0);
+    const base = grams * (parseFloat(e.purchasePrice) || 0);
     const gst  = base * ((parseFloat(e.gst) || 0) / 100);
     return s + base + gst;
   }, 0);
@@ -473,7 +667,10 @@ function GoldTracker() {
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-1">
         <div className="card-title" style={{ marginBottom: 0 }}>🥇 Gold Investment Tracker</div>
-        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '' }); setModal(true); }}>+ Add</button>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary btn-sm" onClick={() => setImportModal(true)}>📥 Import CSV/Excel</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm({ purchaseDate: today(), grams: '', purchasePrice: '', description: '', gst: '3', wastage: '', totalAmount: '' }); setModal(true); }}>+ Add</button>
+        </div>
       </div>
 
       {/* Gold Rate Panel */}
@@ -569,14 +766,17 @@ function GoldTracker() {
                     const gstPct       = parseFloat(e.gst) || 0;       // e.g. 3 means 3%
                     const wastagePct   = parseFloat(e.wastage) || 0;   // e.g. 8 means 8%
 
-                    // Total cost = (grams × rate) + GST on base cost
+                    const amountOnly   = grams === 0 && (parseFloat(e.totalAmount) || 0) > 0; // imported w/o weight
+
+                    // Total cost = (grams × rate) + GST on base cost — or the recorded
+                    // total amount when weight isn't known (e.g. amount-only imports)
                     const baseCost     = grams * buyRate;
                     const gstAmt       = baseCost * (gstPct / 100);
-                    const totalCost    = baseCost + gstAmt;             // what you paid
+                    const totalCost    = amountOnly ? (parseFloat(e.totalAmount) || 0) : baseCost + gstAmt;
 
                     // Net sellable grams = grams reduced by wastage%
                     const netGrams     = grams * (1 - wastagePct / 100);
-                    const curVal       = curRate > 0 ? netGrams * curRate : null;  // value after wastage
+                    const curVal       = (curRate > 0 && !amountOnly) ? netGrams * curRate : null;  // value after wastage
                     const gain         = curVal !== null ? curVal - totalCost : null;
 
                     return (
@@ -586,8 +786,8 @@ function GoldTracker() {
                           <div className="fs-11 text-muted">{daysAgo >= 0 ? `${daysAgo}d ago` : '—'}</div>
                         </td>
                         <td className="fw-600 fs-13">{e.description || '—'}</td>
-                        <td style={{ textAlign: 'right' }} className="fw-700">{grams.toFixed(3)} g</td>
-                        <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(buyRate)}</td>
+                        <td style={{ textAlign: 'right' }} className="fw-700">{amountOnly ? '—' : `${grams.toFixed(3)} g`}</td>
+                        <td style={{ textAlign: 'right' }} className="font-mono fs-12">{amountOnly ? '—' : fmt(buyRate)}</td>
                         <td style={{ textAlign: 'right' }}>
                           <span className="fs-12 text-muted">{gstPct > 0 ? `${gstPct}%` : '—'}</span>
                           {gstAmt > 0 && <div className="fs-11 text-muted">+{fmt(gstAmt)}</div>}
@@ -606,7 +806,7 @@ function GoldTracker() {
                                 <span className="amt amt-g fw-700">{fmt(curVal)}</span>
                                 {wastagePct > 0 && <div className="fs-11 text-muted">after wastage</div>}
                               </>
-                            : <span className="text-muted fs-12">Enter rate ↑</span>}
+                            : <span className="text-muted fs-12">{amountOnly ? 'Weight unknown' : 'Enter rate ↑'}</span>}
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           {gain !== null
@@ -624,6 +824,7 @@ function GoldTracker() {
                                 description: e.description || '',
                                 gst: e.gst ?? '3',
                                 wastage: e.wastage ?? '',
+                                totalAmount: e.totalAmount || '',
                               });
                               setModal(true);
                             }}>✏️</button>
@@ -652,9 +853,14 @@ function GoldTracker() {
               <input className="fi" type="number" value={form.grams} onChange={e => setForm(p => ({ ...p, grams: e.target.value }))} step="0.001" min="0" placeholder="e.g. 10.000" />
             </div>
             <div className="fg">
-              <label className="fl">Buy Price per gram (₹)</label>
+              <label className="fl">Buy Price per gram (₹) <span className="text-muted fw-400 fs-11">optional</span></label>
               <input className="fi" type="number" value={form.purchasePrice} onChange={e => setForm(p => ({ ...p, purchasePrice: e.target.value }))} min="0" placeholder="e.g. 7500" />
             </div>
+          </div>
+          <div className="fg">
+            <label className="fl">Total Amount Paid (₹) <span className="text-muted fw-400 fs-11">optional</span></label>
+            <input className="fi" type="number" value={form.totalAmount} onChange={e => setForm(p => ({ ...p, totalAmount: e.target.value }))} min="0" placeholder="e.g. 75000" />
+            <div className="fs-11 text-muted mt-1">Leave weight blank and fill this + price/gram to auto-calc grams. Or fill this alone if you only know the amount spent.</div>
           </div>
           <div className="frow">
             <div className="fg">
@@ -733,6 +939,12 @@ function GoldTracker() {
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+      {importModal && (
+        <ImportGoldModal
+          onClose={() => setImportModal(false)}
+          onImported={() => { setImportModal(false); load(); }}
+        />
+      )}
     </div>
   );
 }

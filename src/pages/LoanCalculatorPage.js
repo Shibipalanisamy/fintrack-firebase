@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { fmt, fmtDate, today } from '../utils/helpers';
-import { loanService, loanPaymentService } from '../utils/dbService';
+import { loanService, loanPaymentService, goldTrackerService, goldQtyLogService } from '../utils/dbService';
 import { ConfirmDelete, Modal, DateStepper } from '../components/UI';
 import toast from 'react-hot-toast';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -342,6 +342,730 @@ function PaymentModal({ loan, onClose }) {
 }
 
 // ─── Main Loan Calculator Page ─────────────────────────────
+
+const BLANK_GOLD = { goldName: '', date: today(), location: '', count: '', goldSovereign: '', partSection: '', loanStatus: 'not_pledged', linkedLoanId: '', loanAmount: '', loanHolderName: '' };
+
+// ─── Gold Tracker ────────────────────────────────────────────
+const LOAN_STATUS_OPTS = [
+  { key: 'not_pledged', label: 'Not Pledged', color: '#22c55e' },
+  { key: 'pledged',     label: 'Pledged',     color: '#f43f5e' },
+];
+
+const QTY_OPS = [
+  { key: 'add',      label: '+ Add',      sym: '+' },
+  { key: 'subtract', label: '− Subtract', sym: '−' },
+  { key: 'multiply', label: '× Multiply', sym: '×' },
+  { key: 'divide',   label: '÷ Divide',   sym: '÷' },
+];
+
+// Same interest-first amortization used on the Loans page — keeps Gold Tracker's
+// "Current Balance" in sync with what's actually still owed on a linked gold loan.
+function calcLoanOutstanding(loan, payments) {
+  const annualRate = parseFloat(loan.rate) || 0;
+  const monthlyRate = annualRate / 12 / 100;
+  const loanDate = loan.startDate ? new Date(loan.startDate) : new Date(loan.createdAt?.toDate?.() || Date.now());
+  const sorted = [...payments].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const msPerMonth = 1000 * 60 * 60 * 24 * 30.44;
+
+  let balance = parseFloat(loan.amount) || 0;
+  let prevDate = loanDate;
+  for (const p of sorted) {
+    const payDate = new Date(p.date);
+    const monthsElapsed = Math.max(0, (payDate - prevDate) / msPerMonth);
+    const interestAccrued = annualRate > 0 ? balance * monthlyRate * monthsElapsed : 0;
+    const interestPaid = Math.min(interestAccrued, p.amount);
+    const principalPaid = Math.max(0, p.amount - interestPaid);
+    balance = Math.max(0, balance - principalPaid);
+    prevDate = payDate;
+  }
+  return balance;
+}
+
+// Quick per-row quantity adjuster — Add / Subtract / Multiply / Divide against Total Weight
+function QtyAdjustModal({ item, linkedLoan, onSave, onClose }) {
+  const [op, setOp] = useState('add');
+  const [val, setVal] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  useEffect(() => { loadHistory(); }, []);
+
+  const loadHistory = async () => {
+    setLoadingHistory(true);
+    try { setHistory(await goldQtyLogService.getAll(item.id)); }
+    catch { toast.error('Failed to load history'); }
+    finally { setLoadingHistory(false); }
+  };
+
+  const current = parseFloat(item.goldSovereign) || 0;
+  const v = parseFloat(val);
+  const hasVal = val !== '' && !isNaN(v);
+  let newQty = current;
+  if (hasVal) {
+    if (op === 'add') newQty = current + v;
+    else if (op === 'subtract') newQty = current - v;
+    else if (op === 'multiply') newQty = current * v;
+    else if (op === 'divide') newQty = v !== 0 ? current / v : current;
+  }
+  newQty = Math.max(0, newQty);
+  const opSym = op === 'add' ? '+' : op === 'subtract' ? '−' : op === 'multiply' ? '×' : '÷';
+
+  const submit = async () => {
+    if (!hasVal) { toast.error('Enter a value'); return; }
+    if (op === 'divide' && v === 0) { toast.error('Cannot divide by zero'); return; }
+    setSaving(true);
+    try {
+      await onSave({ ...item, goldSovereign: newQty });
+      await goldQtyLogService.create({ goldItemId: item.id, op, opSym, value: v, balanceBefore: current, balanceAfter: newQty });
+    } finally { setSaving(false); }
+  };
+
+  const isPledged = item.loanStatus === 'pledged';
+
+  return (
+    <div>
+      {/* Full record details */}
+      <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+        <div className="fw-800 fs-14 mb-2">{item.goldName || item.partSection || 'Gold Item'}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 14px' }}>
+          <div className="fs-11 text-muted">Date: <span className="fw-700" style={{ color: 'var(--text)' }}>{item.date ? new Date(item.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</span></div>
+          <div className="fs-11 text-muted">Loan Location / Place: <span className="fw-700" style={{ color: 'var(--text)' }}>{item.location || '—'}</span></div>
+          <div className="fs-11 text-muted">Part/Section: <span className="fw-700" style={{ color: 'var(--text)' }}>{item.partSection || '—'}</span></div>
+          <div className="fs-11 text-muted">Total Weight (Sovereign): <span className="fw-700" style={{ color: 'var(--text)' }}>{current.toFixed(2)}</span></div>
+          <div className="fs-11 text-muted">Loan Status: <span className="fw-700" style={{ color: isPledged ? 'var(--red)' : 'var(--green)' }}>{isPledged ? 'Pledged' : 'Not Pledged'}</span></div>
+          {isPledged && <div className="fs-11 text-muted">Loan Holder: <span className="fw-700" style={{ color: 'var(--text)' }}>{item.loanHolderName || '—'}</span></div>}
+          {isPledged && <div className="fs-11 text-muted">Loan Amount: <span className="fw-700" style={{ color: 'var(--text)' }}>{fmt(parseFloat(item.loanAmount) || 0)}</span></div>}
+          {isPledged && <div className="fs-11 text-muted">Current Balance: <span className="fw-700" style={{ color: 'var(--blue)' }}>{fmt(linkedLoan ? linkedLoan.outstandingBalance : (parseFloat(item.loanAmount) || 0))}{linkedLoan ? ' (synced)' : ''}</span></div>}
+        </div>
+      </div>
+
+      {/* Operation picker */}
+      <div className="fg">
+        <label className="fl">Operation</label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6, marginTop: 4 }}>
+          {QTY_OPS.map(o => (
+            <button key={o.key} type="button" onClick={() => setOp(o.key)}
+              style={{ padding: '10px 4px', borderRadius: 8, border: `2px solid ${op === o.key ? 'var(--blue)' : 'var(--border2)'}`, background: op === o.key ? 'rgba(77,158,255,.1)' : 'var(--bg3)', cursor: 'pointer', textAlign: 'center' }}>
+              <div style={{ fontWeight: 900, fontSize: 16, color: op === o.key ? 'var(--blue)' : 'var(--t2)' }}>{o.sym}</div>
+              <div className="fs-10" style={{ color: op === o.key ? 'var(--blue)' : 'var(--t3)' }}>{o.label.split(' ')[1]}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="fg">
+        <label className="fl">Value</label>
+        <input className="fi" type="number" value={val} onChange={e => setVal(e.target.value)} placeholder="e.g. 2" min="0" step="0.01" autoFocus />
+      </div>
+      <div style={{ background: 'var(--bg3)', borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
+        <div className="fs-11 text-muted">Current: {current.toFixed(2)} {opSym} {hasVal ? v : '—'} = New Total</div>
+        <div className="fw-900 fs-18" style={{ color: 'var(--blue)' }}>{newQty.toFixed(2)}</div>
+      </div>
+
+      {/* Adjustment history */}
+      <div className="fg">
+        <label className="fl">Adjustment History ({history.length})</label>
+        {loadingHistory
+          ? <div className="fs-12 text-muted mt-1">Loading…</div>
+          : history.length === 0
+            ? <div className="fs-12 text-muted mt-1">No adjustments logged yet</div>
+            : (
+              <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--border2)', borderRadius: 8, marginTop: 4 }}>
+                {history.map(h => {
+                  const d = h.createdAt?.toDate ? h.createdAt.toDate() : h.createdAt ? new Date(h.createdAt) : null;
+                  return (
+                    <div key={h.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--border2)', fontSize: 12 }}>
+                      <div className="text-muted">{d ? d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</div>
+                      <div className="fw-700">{(h.balanceBefore ?? 0).toFixed(2)} {h.opSym} {h.value} → {(h.balanceAfter ?? 0).toFixed(2)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+        }
+      </div>
+
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? <span className="spin" /> : null} Update Qty</button>
+      </div>
+    </div>
+  );
+}
+
+function emptyGoldRow() {
+  return { _key: Math.random().toString(36).slice(2), ...BLANK_GOLD };
+}
+
+// One set of fields for a single gold row — shared by the edit form and each row of the batch-add form.
+// hideNameLocationDate: used in batch-add mode where Gold Name / Loan Location / Date are entered once, up top, shared by every row.
+function GoldRowFields({ r, onChange, goldLoans, showCount, hideNameLocationDate, hideLoanLinkFields }) {
+  const isPledged = r.loanStatus === 'pledged';
+  const linkedLoan = r.linkedLoanId ? goldLoans.find(l => l.id === r.linkedLoanId) : null;
+
+  const pickLoan = e => {
+    const loanId = e.target.value;
+    const loan = goldLoans.find(l => l.id === loanId);
+    onChange({
+      linkedLoanId: loanId,
+      loanAmount: loan ? loan.amount : r.loanAmount,
+      loanHolderName: loan && !r.loanHolderName ? loan.name : r.loanHolderName,
+    });
+  };
+
+  return (
+    <>
+      {!hideNameLocationDate && (
+        <div className="frow">
+          <div className="fg">
+            <label className="fl">Date</label>
+            <DateStepper name="date" value={r.date} onChange={e => onChange({ date: e.target.value })} />
+          </div>
+          <div className="fg">
+            <label className="fl">Loan Location / Place</label>
+            <input className="fi" value={r.location} onChange={e => onChange({ location: e.target.value })} placeholder="e.g. Home Locker" />
+          </div>
+        </div>
+      )}
+
+      <div className="frow">
+        {showCount && (
+          <div className="fg">
+            <label className="fl">Count (pieces)</label>
+            <input className="fi" type="number" value={r.count} onChange={e => onChange({ count: e.target.value })} placeholder="e.g. 2" min="0" step="1" />
+          </div>
+        )}
+        <div className="fg">
+          <label className="fl">Total Weight (Sovereign)</label>
+          <input className="fi" type="number" value={r.goldSovereign} onChange={e => onChange({ goldSovereign: e.target.value })} placeholder="e.g. 8" min="0" step="0.01" />
+        </div>
+      </div>
+
+      <div className="fg">
+        <label className="fl">Part/Section</label>
+        <input className="fi" value={r.partSection} onChange={e => onChange({ partSection: e.target.value })} placeholder="e.g. Chain, Bangle Set" />
+      </div>
+
+      <div className="fg">
+        <label className="fl">Loan Status</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          {LOAN_STATUS_OPTS.map(opt => (
+            <button key={opt.key} type="button" onClick={() => onChange({ loanStatus: opt.key, ...(opt.key === 'not_pledged' ? { linkedLoanId: '', loanAmount: '' } : {}) })}
+              style={{ flex: 1, padding: '10px 8px', borderRadius: 10, border: `2px solid ${r.loanStatus === opt.key ? opt.color : 'var(--border2)'}`, background: r.loanStatus === opt.key ? opt.color + '15' : 'var(--bg3)', cursor: 'pointer', textAlign: 'center' }}>
+              <div className="fw-700 fs-12" style={{ color: r.loanStatus === opt.key ? opt.color : 'var(--t2)' }}>{opt.label}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isPledged && !hideLoanLinkFields && (
+        <>
+          <div className="fg">
+            <label className="fl">Link to Gold Loan (Loans page) — optional</label>
+            <select className="fs" value={r.linkedLoanId} onChange={pickLoan}>
+              <option value="">— Not linked —</option>
+              {goldLoans.map(l => (
+                <option key={l.id} value={l.id}>{l.name} ({fmt(l.outstandingBalance)} outstanding)</option>
+              ))}
+            </select>
+            {goldLoans.length === 0 && <div className="fs-11 text-muted mt-1">No open Gold Loan found on the Loans page — add one there to link it here</div>}
+            {linkedLoan && <div className="fs-11 mt-1" style={{ color: 'var(--blue)' }}>Loan Amount: {fmt(linkedLoan.amount)} • current balance owed: {fmt(linkedLoan.outstandingBalance)}</div>}
+          </div>
+
+          <div className="fg">
+            <label className="fl">Loan Holder Name</label>
+            <input className="fi" value={r.loanHolderName} onChange={e => onChange({ loanHolderName: e.target.value })} placeholder="e.g. Muthoot Finance" />
+          </div>
+        </>
+      )}
+      {isPledged && hideLoanLinkFields && (
+        <div className="fs-11 text-muted">Using the common Link to Gold Loan / Loan Holder Name set above</div>
+      )}
+    </>
+  );
+}
+
+function GoldForm({ item, goldLoans, initialCommon, onSave, onSaveMultiple, onClose }) {
+  const [saving, setSaving] = useState(false);
+  const isAddToBatch = !!initialCommon; // opened via a parent row's "+ Add" — Date/Location/Holder/Loan already known
+
+  // ── Edit mode: single existing record, unchanged shape ──
+  const [f, setF] = useState({ ...BLANK_GOLD, ...(item || {}) });
+
+  // ── Add mode: Loan Location / Date / Link-to-Loan / Loan Holder entered once, shared by every row in the batch.
+  // Skipped entirely when adding to an existing parent group — those values are already known (passed via initialCommon).
+  const [common, setCommon] = useState({ location: '', date: today(), linkedLoanId: '', loanHolderName: '', ...(initialCommon || {}) });
+  const [rows, setRows] = useState([emptyGoldRow()]);
+  const updateRow = (key, patch) => setRows(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r));
+  const addRow = () => setRows(prev => [...prev, emptyGoldRow()]);
+  const removeRow = key => setRows(prev => prev.length > 1 ? prev.filter(r => r._key !== key) : prev);
+
+  const anyPledged = rows.some(r => r.loanStatus === 'pledged');
+  const commonLinkedLoan = common.linkedLoanId ? goldLoans.find(l => l.id === common.linkedLoanId) : null;
+  const pickCommonLoan = e => {
+    const loanId = e.target.value;
+    const loan = goldLoans.find(l => l.id === loanId);
+    setCommon(p => ({ ...p, linkedLoanId: loanId, loanHolderName: loan && !p.loanHolderName ? loan.name : p.loanHolderName }));
+  };
+
+  const validRow = r => {
+    if (!r.goldSovereign) return 'Fill Weight for every item';
+    return null;
+  };
+
+  const submit = async () => {
+    if (item) {
+      if (!f.goldSovereign) { toast.error('Fill Weight'); return; }
+      if (f.loanStatus === 'pledged' && !f.loanHolderName) { toast.error('Fill Loan Holder Name'); return; }
+      setSaving(true);
+      try { await onSave(f); } finally { setSaving(false); }
+      return;
+    }
+    for (const r of rows) {
+      const err = validRow(r);
+      if (err) { toast.error(err); return; }
+    }
+    if (!isAddToBatch && anyPledged && !common.loanHolderName) { toast.error('Fill Loan Holder Name'); return; }
+    setSaving(true);
+    try {
+      await onSaveMultiple(rows.map(r => {
+        const merged = { ...r, location: common.location, date: common.date };
+        if (merged.loanStatus === 'pledged') {
+          merged.linkedLoanId = common.linkedLoanId;
+          merged.loanAmount = commonLinkedLoan ? commonLinkedLoan.amount : merged.loanAmount;
+          merged.loanHolderName = common.loanHolderName;
+        }
+        return merged;
+      }));
+    } finally { setSaving(false); }
+  };
+
+  if (item) {
+    return (
+      <div>
+        <GoldRowFields r={f} onChange={patch => setF(p => ({ ...p, ...patch }))} goldLoans={goldLoans} showCount />
+        <div className="fs-11 text-muted mt-1 mb-3">Use the ⚖️ button on the row to add/subtract/×/÷ the qty later</div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? <span className="spin" /> : null} Update Item</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Common fields — Loan Location / Date / Link-to-Loan / Loan Holder for the whole batch.
+          Skipped when adding to an existing parent group — those are already fixed for that batch. */}
+      {!isAddToBatch && (
+        <div style={{ background: 'var(--bg3)', borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div className="fs-11 text-muted mb-2">Common for this Add — shared by every item below</div>
+          <div className="frow">
+            <div className="fg">
+              <label className="fl">Date</label>
+              <DateStepper name="date" value={common.date} onChange={e => setCommon(p => ({ ...p, date: e.target.value }))} />
+            </div>
+            <div className="fg">
+              <label className="fl">Loan Location / Place</label>
+              <input className="fi" value={common.location} onChange={e => setCommon(p => ({ ...p, location: e.target.value }))} placeholder="e.g. Home Locker" autoFocus />
+            </div>
+          </div>
+
+          {anyPledged && (
+            <>
+              <div className="fg">
+                <label className="fl">Link to Gold Loan (Loans page) — optional</label>
+                <select className="fs" value={common.linkedLoanId} onChange={pickCommonLoan}>
+                  <option value="">— Not linked —</option>
+                  {goldLoans.map(l => (
+                    <option key={l.id} value={l.id}>{l.name} ({fmt(l.outstandingBalance)} outstanding)</option>
+                  ))}
+                </select>
+                {goldLoans.length === 0 && <div className="fs-11 text-muted mt-1">No open Gold Loan found on the Loans page — add one there to link it here</div>}
+                {commonLinkedLoan && <div className="fs-11 mt-1" style={{ color: 'var(--blue)' }}>Loan Amount: {fmt(commonLinkedLoan.amount)} • current balance owed: {fmt(commonLinkedLoan.outstandingBalance)}</div>}
+              </div>
+              <div className="fg">
+                <label className="fl">Loan Holder Name</label>
+                <input className="fi" value={common.loanHolderName} onChange={e => setCommon(p => ({ ...p, loanHolderName: e.target.value }))} placeholder="e.g. Muthoot Finance" />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between mb-3">
+        <div className="fw-800 fs-13">Product Count: <span style={{ color: 'var(--blue)' }}>{rows.length}</span></div>
+        <button className="btn btn-secondary btn-sm" type="button" onClick={addRow}>➕ Add Another Item</button>
+      </div>
+
+      {rows.map((r, idx) => (
+        <div key={r._key} style={{ border: '1px solid var(--border2)', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="fw-700 fs-12" style={{ color: 'var(--t2)' }}>Item #{idx + 1}</div>
+            {rows.length > 1 && <button className="btn-icon" type="button" onClick={() => removeRow(r._key)}>🗑️</button>}
+          </div>
+          <GoldRowFields r={r} onChange={patch => updateRow(r._key, patch)} goldLoans={goldLoans} showCount hideNameLocationDate hideLoanLinkFields />
+        </div>
+      ))}
+
+      <button className="btn btn-secondary" type="button" onClick={addRow} style={{ width: '100%', marginBottom: 14 }}>➕ Add Another Item</button>
+
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? <span className="spin" /> : null} Add {rows.length > 1 ? `${rows.length} Items` : 'Item'}</button>
+      </div>
+    </div>
+  );
+}
+
+function GoldTracker() {
+  const [items, setItems]     = useState([]);
+  const [goldLoans, setGoldLoans] = useState([]); // active gold_loan entries from the Loans page, with live outstanding balance
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal]     = useState(false);
+  const [edit, setEdit]       = useState(null);
+  const [addCommon, setAddCommon] = useState(null); // pre-filled common fields when adding more items to an existing parent group
+  const [delId, setDelId]     = useState(null);
+  const [qtyItem, setQtyItem] = useState(null); // row-wise +/-/×/÷ qty adjuster
+  const [showBalanceBreakdown, setShowBalanceBreakdown] = useState(false); // '+' on Current Balance card
+  const [showProductTable, setShowProductTable] = useState(false); // show/hide searchable product summary
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortKey, setSortKey] = useState('goldName'); // 'goldName' | 'goldSovereign' | 'loanStatus'
+  const [sortDir, setSortDir] = useState('asc'); // 'asc' | 'desc'
+  const [expandedGroups, setExpandedGroups] = useState(new Set()); // parent rows expanded to show child items
+  const toggleGroup = key => setExpandedGroups(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
+  const [selectedGroups, setSelectedGroups] = useState(new Set()); // parent-row checkboxes, for bulk delete
+  const toggleSelect = key => setSelectedGroups(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [goldItems, allLoans] = await Promise.all([goldTrackerService.getAll(), loanService.getAll()]);
+      setItems(goldItems);
+
+      const openGoldLoans = allLoans.filter(l => l.loanType === 'gold_loan' && l.status !== 'closed');
+      const withBalance = await Promise.all(openGoldLoans.map(async l => {
+        const payments = await loanPaymentService.getAll(l.id);
+        return { ...l, outstandingBalance: calcLoanOutstanding(l, payments) };
+      }));
+      setGoldLoans(withBalance);
+    } catch { toast.error('Failed to load gold items'); }
+    finally { setLoading(false); }
+  };
+
+  const save = async (data) => {
+    try {
+      await goldTrackerService.update(edit.id, data);
+      toast.success('Item updated!');
+      setModal(false); setEdit(null); load();
+    } catch { toast.error('Failed to save'); }
+  };
+
+  const saveMultiple = async (rows) => {
+    try {
+      await Promise.all(rows.map(r => {
+        const { _key, ...data } = r;
+        return goldTrackerService.create(data);
+      }));
+      toast.success(rows.length > 1 ? `${rows.length} items added!` : 'Item added!');
+      setModal(false); setEdit(null); load();
+    } catch { toast.error('Failed to save'); }
+  };
+
+  const saveQty = async (data) => {
+    try { await goldTrackerService.update(data.id, data); toast.success('Quantity updated!'); setQtyItem(null); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  const del = async () => {
+    try { await goldTrackerService.delete(delId); toast.success('Deleted'); setDelId(null); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  // Resolve an item's live current balance: linked loan's synced outstanding balance, else manually entered loan amount
+  const currentBalanceOf = i => {
+    if (i.loanStatus !== 'pledged') return 0;
+    const linked = i.linkedLoanId ? goldLoans.find(l => l.id === i.linkedLoanId) : null;
+    return linked ? linked.outstandingBalance : (parseFloat(i.loanAmount) || 0);
+  };
+
+  const totalSovereign = items.reduce((s, i) => s + (parseFloat(i.goldSovereign) || 0), 0);
+  const pledgedItems   = items.filter(i => i.loanStatus === 'pledged');
+
+  // Group items added together in the same batch (same Date + Loan Location + Loan Holder + Loan Amount)
+  // into one parent row, with the individual items as expandable child rows.
+  const groupMap = new Map();
+  for (const i of items) {
+    const key = `${i.date}|${i.location || ''}|${i.loanHolderName || ''}|${i.loanAmount || ''}`;
+    if (!groupMap.has(key)) groupMap.set(key, { key, date: i.date, location: i.location, loanHolderName: i.loanHolderName, loanAmount: i.loanAmount, items: [] });
+    groupMap.get(key).items.push(i);
+  }
+  const groups = Array.from(groupMap.values())
+    .map(g => {
+      const groupPledged = g.items.filter(x => x.loanStatus === 'pledged');
+      const allPledged = g.items.length > 0 && groupPledged.length === g.items.length;
+      const nonePledged = groupPledged.length === 0;
+      const groupStatus = allPledged ? 'pledged' : nonePledged ? 'not_pledged' : 'mixed';
+      const repLinked = groupPledged.length && groupPledged[0].linkedLoanId ? goldLoans.find(l => l.id === groupPledged[0].linkedLoanId) : null;
+      return {
+        ...g,
+        totalCount: g.items.reduce((s, x) => s + (parseFloat(x.count) || 0), 0),
+        totalWeight: g.items.reduce((s, x) => s + (parseFloat(x.goldSovereign) || 0), 0),
+        groupStatus,
+        repLinked,
+        groupBalance: groupPledged.length ? (repLinked ? repLinked.outstandingBalance : (parseFloat(g.loanAmount) || 0)) : 0,
+      };
+    })
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // "Current Balance" stat = sum of each parent row's Actual Loan Amount (not per-item, since
+  // several items can share one loan — summing per item would double-count it).
+  const totalLoan = groups.reduce((s, g) => s + (g.groupStatus !== 'not_pledged' ? (parseFloat(g.loanAmount) || 0) : 0), 0);
+
+  const bulkDelete = async () => {
+    const idsToDelete = groups.filter(g => selectedGroups.has(g.key)).flatMap(g => g.items.map(i => i.id));
+    try {
+      await Promise.all(idsToDelete.map(id => goldTrackerService.delete(id)));
+      toast.success(`${idsToDelete.length} item(s) deleted across ${selectedGroups.size} loan group(s)`);
+      setSelectedGroups(new Set()); setBulkDeleteConfirm(false); load();
+    } catch { toast.error('Failed to delete selected'); }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4" style={{ flexWrap: 'wrap', gap: 10 }}>
+        <div className="fw-900 fs-16">💎 Gold Tracker</div>
+        <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={() => setShowProductTable(v => !v)}>{showProductTable ? '🙈 Hide' : '👁️ Show'} Product Table</button>
+          <button className="btn btn-primary" onClick={() => { setEdit(null); setAddCommon(null); setModal(true); }}>+ Add Item</button>
+        </div>
+      </div>
+
+      {items.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
+          {[
+            { key: 'items',   label: 'Total Items',      val: items.length,          c: 'var(--blue)',   icon: '💎' },
+            { key: 'weight',  label: 'Total Weight (Sovereign)', val: totalSovereign.toFixed(2), c: 'var(--yellow)', icon: '⚖️' },
+            { key: 'pledged', label: 'Pledged Items',    val: pledgedItems.length,   c: 'var(--red)',    icon: '🔒' },
+            { key: 'balance', label: 'Current Balance',  val: fmt(totalLoan),        c: 'var(--orange)', icon: '💰' },
+          ].map((s, i) => (
+            <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
+              <div className="flex items-center justify-between">
+                <div className="fs-11 text-muted">{s.icon} {s.label}</div>
+                {s.key === 'balance' && pledgedItems.length > 0 && (
+                  <button className="btn-icon" title="Show product breakdown" onClick={() => setShowBalanceBreakdown(v => !v)} style={{ fontSize: 11, padding: '1px 6px', lineHeight: 1 }}>
+                    {showBalanceBreakdown ? '−' : '➕'}
+                  </button>
+                )}
+              </div>
+              <div className="fw-800 fs-14 mt-1" style={{ color: s.c }}>{s.val}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showBalanceBreakdown && pledgedItems.length > 0 && (
+        <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+          <div className="fw-800 fs-13 mb-2">Pledged Products — Current Balance Breakdown</div>
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+            {pledgedItems.map(i => (
+              <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border2)', fontSize: 13 }}>
+                <div>{i.goldName || i.partSection || '—'} <span className="fs-11 text-muted">({(parseFloat(i.goldSovereign) || 0).toFixed(2)} wt)</span></div>
+                <div className="fw-700">{fmt(currentBalanceOf(i))}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, marginTop: 4, borderTop: '2px solid var(--border)' }}>
+            <div className="fw-800 fs-13">Sum of Total Weight (Sovereign)</div>
+            <div className="fw-900 fs-14" style={{ color: 'var(--blue)' }}>{pledgedItems.reduce((s, i) => s + (parseFloat(i.goldSovereign) || 0), 0).toFixed(2)}</div>
+          </div>
+        </div>
+      )}
+
+      {showProductTable && (
+        <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+          <div className="flex items-center justify-between mb-3" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="fw-800 fs-13">Product Summary</div>
+            <input className="fi" style={{ maxWidth: 220 }} placeholder="🔍 Search by product name" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  {[
+                    { key: 'goldName', label: 'Product Name' },
+                    { key: 'goldSovereign', label: 'Weight' },
+                    { key: 'loanStatus', label: 'Pledged' },
+                  ].map(col => (
+                    <th key={col.key} style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => {
+                      if (sortKey === col.key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+                      else { setSortKey(col.key); setSortDir('asc'); }
+                    }}>
+                      {col.label} {sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : ''}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items
+                  .filter(i => ((i.goldName || i.partSection || '')).toLowerCase().includes(searchTerm.toLowerCase()))
+                  .slice()
+                  .sort((a, b) => {
+                    let av, bv;
+                    if (sortKey === 'goldSovereign') { av = parseFloat(a.goldSovereign) || 0; bv = parseFloat(b.goldSovereign) || 0; }
+                    else { av = (a[sortKey] || '').toString().toLowerCase(); bv = (b[sortKey] || '').toString().toLowerCase(); }
+                    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+                    if (av > bv) return sortDir === 'asc' ? 1 : -1;
+                    return 0;
+                  })
+                  .map(i => (
+                    <tr key={i.id}>
+                      <td className="fw-700">{i.goldName || i.partSection || '—'}</td>
+                      <td>{(parseFloat(i.goldSovereign) || 0).toFixed(2)}</td>
+                      <td>
+                        <span style={{ background: (i.loanStatus === 'pledged' ? '#f43f5e' : '#22c55e') + '20', color: i.loanStatus === 'pledged' ? '#f43f5e' : '#22c55e', fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 20 }}>
+                          {i.loanStatus === 'pledged' ? 'Pledged' : 'Not Pledged'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                }
+                {items.filter(i => ((i.goldName || i.partSection || '')).toLowerCase().includes(searchTerm.toLowerCase())).length === 0 && (
+                  <tr><td colSpan={3} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No products match your search</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {loading
+        ? <div className="spin-center"><div className="spin spin-lg" /></div>
+        : items.length === 0
+          ? (
+            <div className="card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+              <div style={{ fontSize: 64, marginBottom: 16 }}>💎</div>
+              <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 8 }}>No gold items yet</div>
+              <div className="text-muted fs-14 mb-5">Track gold sovereigns, storage location, and loan/pledge status</div>
+              <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 28px' }} onClick={() => setModal(true)}>+ Add First Item</button>
+            </div>
+          )
+          : (
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <div className="flex items-center justify-between" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap', gap: 8 }}>
+                <div className="fw-800 fs-13">Gold Loan Summary ({groups.length})</div>
+                <div className="flex items-center gap-2">
+                  {selectedGroups.size > 0 && (
+                    <button className="btn btn-sm" style={{ background: '#f43f5e', color: '#fff', border: 'none' }} onClick={() => setBulkDeleteConfirm(true)}>
+                      🗑️ Delete Selected ({selectedGroups.size})
+                    </button>
+                  )}
+                  <button className="btn-icon" title="Add Item(s)" onClick={() => { setEdit(null); setAddCommon(null); setModal(true); }}>➕</button>
+                </div>
+              </div>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th></th>
+                    <th>Gold Owner / Loaner Name</th>
+                    <th style={{ textAlign: 'right' }}>Total Gold Weight</th>
+                    <th style={{ textAlign: 'right' }}>Total Count</th>
+                    <th style={{ textAlign: 'right' }}>Current Loan Amount</th>
+                    <th style={{ textAlign: 'right' }}>Actual Loan Amount</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map(g => {
+                    const isExpanded = expandedGroups.has(g.key);
+                    const isSelected = selectedGroups.has(g.key);
+                    return (
+                      <Fragment key={g.key}>
+                        <tr>
+                          <td><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(g.key)} /></td>
+                          <td><button className="btn-icon" title={isExpanded ? 'Hide items' : 'Show items'} onClick={() => toggleGroup(g.key)}>{isExpanded ? '▼' : '▶'}</button></td>
+                          <td className="fs-12 text-muted">{g.loanHolderName || '—'}</td>
+                          <td style={{ textAlign: 'right' }} className="fw-700">{g.totalWeight.toFixed(2)} g</td>
+                          <td style={{ textAlign: 'right' }} className="fw-700">{g.totalCount || '—'}</td>
+                          <td style={{ textAlign: 'right', color: g.repLinked ? 'var(--blue)' : undefined }} className="fw-700">
+                            {g.groupStatus !== 'not_pledged' && (g.repLinked || g.loanAmount) ? fmt(g.groupBalance) : '—'}
+                            {g.repLinked && <div className="fs-10 text-muted" style={{ fontWeight: 400 }}>synced • {g.repLinked.name}</div>}
+                          </td>
+                          <td style={{ textAlign: 'right' }} className="fw-700">{g.groupStatus !== 'not_pledged' && g.loanAmount ? fmt(parseFloat(g.loanAmount) || 0) : '—'}</td>
+                          <td>
+                            <button className="btn btn-secondary btn-sm" title="Add another product to this batch" onClick={() => {
+                              setEdit(null);
+                              setAddCommon({
+                                location: g.location,
+                                date: g.date,
+                                loanHolderName: g.loanHolderName || '',
+                                linkedLoanId: g.repLinked ? g.repLinked.id : '',
+                              });
+                              setModal(true);
+                            }}>➕ Add</button>
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr>
+                            <td colSpan={8} style={{ padding: 0, background: 'var(--bg3)' }}>
+                              <table className="tbl" style={{ width: '100%' }}>
+                                <thead>
+                                  <tr>
+                                    <th>Gold Product Name</th>
+                                    <th style={{ textAlign: 'right' }}>Gold Product Weight</th>
+                                    <th style={{ textAlign: 'right' }}>Gold Product Count</th>
+                                    <th></th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {g.items.map(i => (
+                                    <tr key={i.id}>
+                                      <td className="fw-700">{i.goldName || i.partSection || '—'}</td>
+                                      <td style={{ textAlign: 'right' }} className="fw-700">{(parseFloat(i.goldSovereign) || 0).toFixed(2)} g</td>
+                                      <td style={{ textAlign: 'right' }} className="fs-12 text-muted">{i.count || '—'}</td>
+                                      <td>
+                                        <div className="flex gap-2">
+                                          <button className="btn-icon" title="Adjust Qty" onClick={() => setQtyItem(i)}>➕</button>
+                                          <button className="btn btn-secondary btn-sm" onClick={() => { setEdit(i); setModal(true); }}>✏️</button>
+                                          <button className="btn-icon" onClick={() => setDelId(i.id)}>🗑️</button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )
+      }
+
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Gold Item' : addCommon ? '➕ Add to Batch' : '💎 New Gold Item'} onClose={() => { setModal(false); setEdit(null); setAddCommon(null); }}>
+          <GoldForm item={edit} goldLoans={goldLoans} initialCommon={addCommon} onSave={save} onSaveMultiple={saveMultiple} onClose={() => { setModal(false); setEdit(null); setAddCommon(null); }} />
+        </Modal>
+      )}
+      {qtyItem && (
+        <Modal title={`⚖️ Adjust Quantity — ${qtyItem.goldName || qtyItem.partSection || 'Item'}`} onClose={() => setQtyItem(null)}>
+          <QtyAdjustModal item={qtyItem} linkedLoan={qtyItem.linkedLoanId ? goldLoans.find(l => l.id === qtyItem.linkedLoanId) : null} onSave={saveQty} onClose={() => setQtyItem(null)} />
+        </Modal>
+      )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+      {bulkDeleteConfirm && <ConfirmDelete onConfirm={bulkDelete} onCancel={() => setBulkDeleteConfirm(false)} />}
+    </div>
+  );
+}
+
 export default function LoanCalculatorPage() {
   const LOAN_TYPES = [
     { key: 'personal_loan', label: 'Personal Loan', icon: '💳' },
@@ -367,6 +1091,7 @@ export default function LoanCalculatorPage() {
   const [editLoan, setEditLoan] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [loansTab, setLoansTab] = useState('active'); // 'active' | 'closed'
+  const [pageTab, setPageTab] = useState('calculator'); // 'calculator' | 'gold'
 
   useEffect(() => { loadLoans(); }, []);
 
@@ -503,6 +1228,25 @@ export default function LoanCalculatorPage() {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div style={{ borderBottom: '1px solid var(--border)', display: 'flex', gap: 2, marginBottom: 20, overflowX: 'auto' }}>
+        {[
+          { key: 'calculator', label: '🧮 Loan Calculator' },
+          { key: 'gold',       label: '💎 Gold Tracker' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setPageTab(t.key)}
+            style={{ padding: '8px 18px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: pageTab === t.key ? 'var(--bg3)' : 'transparent', color: pageTab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: pageTab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Gold Tracker Tab */}
+      {pageTab === 'gold' && <GoldTracker />}
+
+      {/* Loan Calculator Tab */}
+      {pageTab === 'calculator' && (
+      <>
       {/* ── Top Summary Stats ── */}
       {loans.length > 0 && (
         <div className="stats" style={{ marginBottom: 20 }}>
@@ -931,6 +1675,8 @@ export default function LoanCalculatorPage() {
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+      </>
+      )}
     </div>
   );
 }
