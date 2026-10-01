@@ -5,7 +5,6 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Layout } from './components/UI';
 import AuthPage from './pages/AuthPage';
-import AppLock from './AppLock';
 import './App.css';
 
 // Every other page is loaded on demand (code-split) instead of being bundled
@@ -22,7 +21,7 @@ const SettingsPage       = lazy(() => import('./pages/SettingsPage'));
 const InsurancePage      = lazy(() => import('./pages/InsurancePage'));
 const BudgetPage         = lazy(() => import('./pages/BudgetPage'));
 const AgriculturePage    = lazy(() => import('./pages/AgriculturePage'));
-const ChangelogPage      = lazy(() => import('./pages/ChangelogPage'));
+const NotesPage          = lazy(() => import('./pages/NotesPage'));
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -57,7 +56,7 @@ function App() {
                       <Route path="/insurance" element={<InsurancePage />} />
                       <Route path="/budget" element={<BudgetPage />} />
                       <Route path="/agriculture" element={<AgriculturePage />} />
-                      <Route path="/changelog" element={<ChangelogPage />} />
+                      <Route path="/notes" element={<NotesPage />} />
                       {/* Removed: /reports, /goals, /cards, /banking — see
                           finboom project notes for what moved where. */}
                       <Route path="*" element={<Navigate to="/" />} />

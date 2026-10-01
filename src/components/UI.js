@@ -17,6 +17,7 @@ const NAV = [
   { icon: '🌾', label: 'Agriculture',     to: '/agriculture' },
   { icon: '📋', label: 'Changelog', to: '/changelog' },
   { icon: '⚙️', label: 'Settings',        to: '/settings' },
+  { icon: '📝', label: 'Notes',        to: '/notes' },
   
 ];
 

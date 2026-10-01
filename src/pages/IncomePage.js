@@ -26,9 +26,9 @@ const salaryService   = isolatedService('salaryrecords');
 const freelanceService = isolatedService('freelancerecords');
 
 // ─── Shared simple form for Salary / Freelance ──────────────────────────────
-function SimpleForm({ item, banks, onSave, onClose, type }) {
+function SimpleForm({ item, banks, companies, onSave, onClose, type }) {
   const [f, setF] = useState({
-    date: today(), amount: '', notes: '', bankAccount: '', clientName: '',
+    date: today(), amount: '', notes: '', bankAccount: '', clientName: '', company: '',
     ...(item ? { ...item, date: fmtDateInput(item.date) } : {}),
   });
   const [loading, setLoading] = useState(false);
@@ -44,6 +44,19 @@ function SimpleForm({ item, banks, onSave, onClose, type }) {
         <div className="fg"><label className="fl">Date</label><DateStepper name="date" value={f.date} onChange={ch} required max={today()} /></div>
         <div className="fg"><label className="fl">Amount (₹)</label><input className="fi" type="number" name="amount" value={f.amount} onChange={ch} placeholder="0.00" step="0.01" min="0" required /></div>
       </div>
+      {type === 'salary' && (
+        <div className="fg">
+          <label className="fl">Company</label>
+          {companies && companies.length > 0 ? (
+            <select className="fs" name="company" value={f.company} onChange={ch}>
+              <option value="">— Select Company —</option>
+              {companies.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+            </select>
+          ) : (
+            <input className="fi" name="company" value={f.company} onChange={ch} placeholder="e.g. Acme Corp — add companies in Settings for a dropdown" />
+          )}
+        </div>
+      )}
       {type === 'freelance' && (
         <div className="fg"><label className="fl">Client / Project</label><input className="fi" name="clientName" value={f.clientName} onChange={ch} placeholder="e.g. Acme Corp — Logo Design" /></div>
       )}
@@ -78,7 +91,7 @@ function SimpleForm({ item, banks, onSave, onClose, type }) {
 }
 
 // ─── Reusable isolated tab (Salary or Freelance) ────────────────────────────
-function IsolatedTab({ type, banks }) {
+function IsolatedTab({ type, banks, companies }) {
   const svc        = type === 'salary' ? salaryService : freelanceService;
   const icon       = type === 'salary' ? '🧾' : '💼';
   const accentCol  = type === 'salary' ? 'var(--blue)' : '#8b5cf6';
@@ -91,6 +104,7 @@ function IsolatedTab({ type, banks }) {
   const [delId, setDelId]       = useState(null);
   const [search, setSearch]     = useState('');
   const [monthFilter, setMonthFilter] = useState('all');
+  const [companyFilter, setCompanyFilter] = useState(new Set()); // empty = show all companies
   const [selected, setSelected] = useState(new Set());
   const [showChart, setShowChart] = useState(false);
 
@@ -183,8 +197,23 @@ function IsolatedTab({ type, banks }) {
     const q = search.toLowerCase();
     const matchSearch = !search || i.notes?.toLowerCase().includes(q) || i.bankAccount?.toLowerCase().includes(q) || i.clientName?.toLowerCase().includes(q);
     const matchMonth  = monthFilter === 'all' || i.date?.startsWith(monthFilter);
-    return matchSearch && matchMonth;
+    const matchCompany = companyFilter.size === 0 || companyFilter.has(i.company || 'Unspecified');
+    return matchSearch && matchMonth && matchCompany;
   });
+
+  const toggleCompanyFilter = (name) => setCompanyFilter(prev => {
+    const next = new Set(prev);
+    next.has(name) ? next.delete(name) : next.add(name);
+    return next;
+  });
+
+  // Inline company change, straight from the table row — no need to open
+  // the edit modal just to fix which company a record belongs to.
+  const changeRowCompany = async (item, newCompany) => {
+    setItems(prev => prev.map(x => x.id === item.id ? { ...x, company: newCompany } : x)); // optimistic
+    try { await svc.update(item.id, { company: newCompany }); }
+    catch { toast.error('Failed to update company'); load(); }
+  };
 
   const total   = filtered.reduce((s, i) => s + +i.amount, 0);
   const avg     = filtered.length ? total / filtered.length : 0;
@@ -194,6 +223,17 @@ function IsolatedTab({ type, banks }) {
     month: new Date(`${m}-01`).toLocaleString('default', { month: 'short', year: 'numeric' }),
     amount: filtered.filter(i => i.date?.startsWith(m)).reduce((s, i) => s + +i.amount, 0),
   }));
+
+  // Company-wise totals, salary only — grouped from the currently filtered records
+  const companyTotals = type === 'salary'
+    ? Object.entries(
+        filtered.reduce((acc, i) => {
+          const c = i.company || 'Unspecified';
+          acc[c] = (acc[c] || 0) + (+i.amount || 0);
+          return acc;
+        }, {})
+      ).sort((a, b) => b[1] - a[1])
+    : [];
 
   const summaryCards = type === 'salary'
     ? [
@@ -225,6 +265,42 @@ function IsolatedTab({ type, banks }) {
           </div>
         ))}
       </div>
+
+      {/* Multi-select Company Filter — salary only */}
+      {type === 'salary' && companies && companies.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="card-title" style={{ marginBottom: 0 }}>🏢 Filter by Company <span className="text-muted fs-12">(select any number — none selected shows all)</span></div>
+            {companyFilter.size > 0 && <button className="btn btn-secondary btn-sm" onClick={() => setCompanyFilter(new Set())}>Clear ({companyFilter.size})</button>}
+          </div>
+          <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+            {companies.map(c => {
+              const active = companyFilter.has(c.name);
+              return (
+                <button key={c.id} type="button" onClick={() => toggleCompanyFilter(c.name)}
+                  style={{ padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `2px solid ${active ? (c.color || 'var(--blue)') : 'var(--border2)'}`, background: active ? `${c.color || 'var(--blue)'}20` : 'var(--bg3)', color: active ? (c.color || 'var(--blue)') : 'var(--t3)' }}>
+                  {active ? '✓ ' : ''}{c.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Company-wise Sum — salary only */}
+      {type === 'salary' && companyTotals.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-title">🏢 Company-wise Total</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {companyTotals.map(([company, amt]) => (
+              <div key={company} className="flex items-center justify-between" style={{ padding: '7px 10px', background: 'var(--bg3)', borderRadius: 8 }}>
+                <span className="fw-700 fs-13">{company}</span>
+                <span className="fw-800" style={{ color: 'var(--green)' }}>{fmt(amt)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="filters" style={{ marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
@@ -305,6 +381,7 @@ function IsolatedTab({ type, banks }) {
                 <th>#</th>
                 <th>Month</th>
                 <th>Date</th>
+                {type === 'salary' && <th>Company</th>}
                 {type === 'freelance' && <th>Client / Project</th>}
                 <th>Bank Account</th>
                 <th>Notes</th>
@@ -324,6 +401,16 @@ function IsolatedTab({ type, banks }) {
                     <td className="text-muted fs-12">{idx + 1}</td>
                     <td style={{ fontWeight: 700, fontSize: 13 }}>{month}</td>
                     <td className="font-mono fs-12 text-muted">{fmtDate(i.date)}</td>
+                    {type === 'salary' && (
+                      <td>
+                        <select className="fs" style={{ padding: '4px 6px', fontSize: 11, minWidth: 110 }}
+                          value={i.company || ''} onChange={e => changeRowCompany(i, e.target.value)}>
+                          <option value="">— None —</option>
+                          {companies && companies.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                          {i.company && !(companies || []).some(c => c.name === i.company) && <option value={i.company}>{i.company}</option>}
+                        </select>
+                      </td>
+                    )}
                     {type === 'freelance' && (
                       <td style={{ fontSize: 12, fontWeight: 600 }}>{i.clientName || <span className="text-muted">—</span>}</td>
                     )}
@@ -359,7 +446,7 @@ function IsolatedTab({ type, banks }) {
 
       {modal && (
         <Modal title={edit ? `✏️ Edit ${label}` : `➕ Add ${label}`} onClose={() => { setModal(false); setEdit(null); }}>
-          <SimpleForm item={edit} banks={banks} onSave={save} onClose={() => { setModal(false); setEdit(null); }} type={type} />
+          <SimpleForm item={edit} banks={banks} companies={companies} onSave={save} onClose={() => { setModal(false); setEdit(null); }} type={type} />
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
@@ -413,6 +500,7 @@ export default function IncomePage() {
   const [items, setItems]         = useState([]);
   const [cats, setCats]           = useState([]);
   const [banks, setBanks]         = useState([]);
+  const [companies, setCompanies] = useState([]); // Settings-managed, used as the Company dropdown on Salary records
   const [loading, setLoading]     = useState(true);
   const [modal, setModal]         = useState(false);
   const [edit, setEdit]           = useState(null);
@@ -425,6 +513,9 @@ export default function IncomePage() {
     const uid = auth.currentUser?.uid; if (!uid) return;
     getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', uid)))
       .then(snap => setBanks(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => {});
+    getDocs(query(collection(db, 'companies'), where('userId', '==', uid)))
+      .then(snap => setCompanies(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => {});
   }, []);
 
@@ -549,7 +640,7 @@ export default function IncomePage() {
       )}
 
       {/* Tab: Salary (isolated — salaryrecords collection) */}
-      {activeTab === 'salary' && <IsolatedTab type="salary" banks={banks} />}
+      {activeTab === 'salary' && <IsolatedTab type="salary" banks={banks} companies={companies} />}
 
       {/* Tab: Freelance (isolated — freelancerecords collection) */}
       {activeTab === 'freelance' && <IsolatedTab type="freelance" banks={banks} />}

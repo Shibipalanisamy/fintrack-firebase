@@ -3,7 +3,10 @@ import { db, auth } from '../utils/firebase';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp } from 'firebase/firestore';
 import { fmt, fmtDate, fmtDateInput, today } from '../utils/helpers';
 import { Modal, ConfirmDelete, DateStepper, DateRangeFilter } from '../components/UI';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import toast from 'react-hot-toast';
+
+const AGRI_PALETTE = ['#4d9eff', '#22c55e', '#a78bfa', '#f97316', '#f43f5e', '#fbbf24', '#38bdf8', '#e879f9', '#10d98a', '#fb7185'];
 
 // ─── Isolated collection helpers (own collections — never touch expenses/income) ───
 const isolatedService = (collectionName) => ({
@@ -26,9 +29,9 @@ const spendService = isolatedService('agriSpending');
 const collectService = isolatedService('agriCollection');
 
 // ─── Add/Edit Form ───────────────────────────────────────────
-function AgriForm({ item, onSave, onClose, mode }) {
+function AgriForm({ item, onSave, onClose, mode, categories }) {
   const [f, setF] = useState({
-    date: today(), description: '', amount: '',
+    date: today(), description: '', amount: '', category: '',
     ...(item ? { ...item, date: fmtDateInput(item.date) } : {}),
   });
   const [loading, setLoading] = useState(false);
@@ -39,11 +42,23 @@ function AgriForm({ item, onSave, onClose, mode }) {
     finally { setLoading(false); }
   };
   const amountLabel = mode === 'spend' ? 'Amount Spent (₹)' : 'Amount Received (₹)';
+  const categoryLabel = mode === 'spend' ? 'Spending Category' : 'Income Source';
   return (
     <form onSubmit={submit}>
       <div className="frow">
         <div className="fg"><label className="fl">Date</label><DateStepper name="date" value={f.date} onChange={ch} required max={today()} /></div>
         <div className="fg"><label className="fl">{amountLabel}</label><input className="fi" type="number" name="amount" value={f.amount} onChange={ch} placeholder="0.00" step="0.01" min="0" required /></div>
+      </div>
+      <div className="fg">
+        <label className="fl">{categoryLabel}</label>
+        {categories && categories.length > 0 ? (
+          <select className="fs" name="category" value={f.category} onChange={ch}>
+            <option value="">— Select {categoryLabel} —</option>
+            {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+          </select>
+        ) : (
+          <input className="fi" name="category" value={f.category} onChange={ch} placeholder={`Add ${categoryLabel.toLowerCase()}s in Settings for a dropdown`} />
+        )}
       </div>
       <div className="fg"><label className="fl">Description</label><textarea className="fta" name="description" value={f.description} onChange={ch} rows={2} placeholder={mode === 'spend' ? 'e.g. Seeds, fertilizer, labour...' : 'e.g. Crop sale, subsidy...'} /></div>
       <div className="modal-foot">
@@ -66,6 +81,7 @@ function AgriTab({ mode }) {
   const emptyMsg = mode === 'spend' ? 'No spending records yet' : 'No collection records yet';
 
   const [items, setItems]         = useState([]);
+  const [categories, setCategories] = useState([]); // Settings-managed: agriSpendCategories or agriIncomeCategories
   const [loading, setLoading]     = useState(true);
   const [modal, setModal]         = useState(false);
   const [edit, setEdit]           = useState(null);
@@ -73,6 +89,7 @@ function AgriTab({ mode }) {
   const [selected, setSelected]   = useState(new Set());
   const [dateFrom, setDateFrom]   = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; });
   const [dateTo, setDateTo]       = useState(() => today());
+  const [showGraph, setShowGraph] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,12 +101,30 @@ function AgriTab({ mode }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setSelected(new Set()); }, [dateFrom, dateTo, items.length]);
 
+  useEffect(() => {
+    const uid = auth.currentUser?.uid; if (!uid) return;
+    const collectionName = mode === 'spend' ? 'agriSpendCategories' : 'agriIncomeCategories';
+    getDocs(query(collection(db, collectionName), where('userId', '==', uid)))
+      .then(snap => setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => {});
+  }, [mode]);
+
   const filtered = items.filter(i => {
     const d = fmtDateInput(i.date);
     return d >= dateFrom && d <= dateTo;
   });
 
   const total = filtered.reduce((s, i) => s + (+i.amount || 0), 0);
+
+  // Category-wise totals, for both modes
+  const categoryTotals = Object.entries(
+    filtered.reduce((acc, i) => {
+      const c = i.category || 'Uncategorized';
+      acc[c] = (acc[c] || 0) + (+i.amount || 0);
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]);
+  const pieData = categoryTotals.map(([name, value], i) => ({ name, value, color: AGRI_PALETTE[i % AGRI_PALETTE.length] }));
 
   const save = async data => {
     try {
@@ -137,6 +172,39 @@ function AgriTab({ mode }) {
         </div>
       </div>
 
+      {mode === 'spend' && categoryTotals.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="card-title" style={{ marginBottom: 0 }}>🌱 Category-wise Spending</div>
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowGraph(v => !v)}>
+              {showGraph ? '🙈 Hide' : '📊 Show'} Graph
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: showGraph ? 14 : 0 }}>
+            {categoryTotals.map(([cat, amt], i) => (
+              <div key={cat} className="flex items-center justify-between" style={{ padding: '7px 10px', background: 'var(--bg3)', borderRadius: 8 }}>
+                <div className="flex items-center gap-2">
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: AGRI_PALETTE[i % AGRI_PALETTE.length], flexShrink: 0 }} />
+                  <span className="fw-700 fs-13">{cat}</span>
+                </div>
+                <span className="fw-800 amt-r">{fmt(amt)}</span>
+              </div>
+            ))}
+          </div>
+          {showGraph && (
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                  {pieData.map((d, i) => <Cell key={d.name} fill={d.color} />)}
+                </Pie>
+                <Tooltip formatter={(v) => fmt(v)} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      )}
+
       {loading
         ? <div className="spin-center"><div className="spin spin-lg" /></div>
         : filtered.length === 0
@@ -146,6 +214,7 @@ function AgriTab({ mode }) {
                 <tr>
                   <th style={{ width: 36 }}><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} /></th>
                   <th>Date</th>
+                  <th>Category</th>
                   <th>Description</th>
                   <th style={{ textAlign: 'right' }}>{amtHead}</th>
                   <th style={{ textAlign: 'center' }}>Actions</th>
@@ -155,17 +224,18 @@ function AgriTab({ mode }) {
                 <tr key={i.id}>
                   <td><input type="checkbox" checked={selected.has(i.id)} onChange={() => toggleSelect(i.id)} /></td>
                   <td className="font-mono fs-12 text-muted">{fmtDate(i.date)}</td>
+                  <td className="fs-12">{i.category ? <span className="badge">{i.category}</span> : '—'}</td>
                   <td className="fs-13">{i.description || '—'}</td>
                   <td style={{ textAlign: 'right' }}><span className={`amt ${amtClass}`}>{fmt(i.amount)}</span></td>
                   <td><div className="actions" style={{ justifyContent: 'center' }}><button className="btn-icon" onClick={() => { setEdit(i); setModal(true); }}>✏️</button><button className="btn-icon" onClick={() => setDelId(i.id)}>🗑️</button></div></td>
                 </tr>
               ))}</tbody>
-              <tfoot><tr><td colSpan={3} className="text-muted fs-12" style={{ padding: '11px 14px' }}>TOTAL</td><td style={{ textAlign: 'right', padding: '11px 14px' }}><span className={`amt ${amtClass} fw-800`}>{fmt(total)}</span></td><td /></tr></tfoot>
+              <tfoot><tr><td colSpan={4} className="text-muted fs-12" style={{ padding: '11px 14px' }}>TOTAL</td><td style={{ textAlign: 'right', padding: '11px 14px' }}><span className={`amt ${amtClass} fw-800`}>{fmt(total)}</span></td><td /></tr></tfoot>
             </table></div>}
 
       {modal && (
         <Modal title={edit ? `✏️ Edit ${mode === 'spend' ? 'Spending' : 'Collection'}` : `➕ Add ${mode === 'spend' ? 'Spending' : 'Collection'}`} onClose={() => { setModal(false); setEdit(null); }}>
-          <AgriForm item={edit} mode={mode} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
+          <AgriForm item={edit} mode={mode} categories={categories} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}

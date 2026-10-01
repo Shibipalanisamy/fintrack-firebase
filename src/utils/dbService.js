@@ -542,6 +542,17 @@ const DEFAULT_BROKERS = [
 // ─── INSURANCE ───────────────────────────────────────────
 // Moved here (from InsurancePage.js) so the Recurring tab can also read/
 // update insurance policies, for the Recurring ↔ Insurance sync feature.
+export const notesService = {
+  async getAll() {
+    const q = query(collection(db, 'notes'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  },
+  async create(data) { return addDoc(collection(db, 'notes'), { text: '', done: false, ...data, userId: uid(), createdAt: Timestamp.now() }); },
+  async update(id, data) { return updateDoc(doc(db, 'notes', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'notes', id)); },
+};
+
 export const insuranceService = {
   async getAll() {
     const q = query(collection(db, 'insurance'), where('userId', '==', uid()));

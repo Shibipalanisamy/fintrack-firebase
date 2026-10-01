@@ -306,6 +306,98 @@ const BANK_COLORS = ['#378ADD', '#E24B4A', '#22c55e', '#f97316', '#a78bfa', '#fb
 const BANK_ICONS = ['🏦', '🏧', '💳', '🏛️', '💰', '🏢', '🌐', '💵'];
 const BLANK_BANK = { name: '', shortName: '', accountNumber: '', ifsc: '', balance: '', color: BANK_COLORS[0], icon: '🏦', accountType: 'Savings', notes: '' };
 
+// ─── Generic simple named list (name + color), stored in its own Firestore
+// collection — used for dropdown option lists managed from Settings:
+// Companies (Income → Salary), Agri Spending/Income Categories.
+const SIMPLE_LIST_COLORS = ['#4d9eff', '#22c55e', '#a78bfa', '#f97316', '#f43f5e', '#fbbf24', '#38bdf8', '#e879f9', '#10d98a', '#fb7185'];
+const simpleListService = (collectionName) => ({
+  async getAll() {
+    const u = auth.currentUser?.uid; if (!u) return [];
+    const snap = await getDocs(query(collection(db, collectionName), where('userId', '==', u)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async create(data) {
+    const u = auth.currentUser?.uid; if (!u) throw new Error('Not logged in');
+    return addDoc(collection(db, collectionName), { ...data, userId: u, createdAt: Timestamp.now() });
+  },
+  async update(id, data) { return updateDoc(doc(db, collectionName, id), data); },
+  async delete(id) { return deleteDoc(doc(db, collectionName, id)); },
+});
+
+function SimpleListSection({ title, icon, collectionName, hint }) {
+  const svc = simpleListService(collectionName);
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [delId, setDelId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const load = async () => { setLoading(true); try { setList(await svc.getAll()); } catch { toast.error('Failed to load'); } finally { setLoading(false); } };
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    if (!name.trim()) return;
+    setAdding(true);
+    try {
+      const color = SIMPLE_LIST_COLORS[list.length % SIMPLE_LIST_COLORS.length];
+      await svc.create({ name: name.trim(), color });
+      setName('');
+      load();
+    } catch { toast.error('Failed to add'); }
+    finally { setAdding(false); }
+  };
+
+  const del = async () => { try { await svc.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
+
+  const startEdit = (item) => { setEditingId(item.id); setEditName(item.name); };
+  const saveEdit = async () => {
+    if (!editName.trim()) { setEditingId(null); return; }
+    try {
+      await svc.update(editingId, { name: editName.trim() });
+      setList(prev => prev.map(i => i.id === editingId ? { ...i, name: editName.trim() } : i));
+      toast.success('Renamed!');
+    } catch { toast.error('Failed to rename'); }
+    finally { setEditingId(null); }
+  };
+
+  return (
+    <div className="card mb-4">
+      <div className="card-title" style={{ marginBottom: 2 }}>{icon} {title} <span className="text-muted fs-12">({list.length})</span></div>
+      {hint && <div className="text-muted fs-12 mb-3">{hint}</div>}
+      <div className="flex gap-2 mb-3">
+        <input className="fi" style={{ flex: 1 }} value={name} onChange={e => setName(e.target.value)}
+          placeholder={`Add a new ${title.toLowerCase().replace(/s$/, '')}…`}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
+        <button className="btn btn-primary btn-sm" onClick={add} disabled={adding || !name.trim()}>+ Add</button>
+      </div>
+      {loading ? <div className="spin-center" style={{ height: 40 }}><div className="spin" /></div>
+        : list.length === 0 ? <div className="text-muted fs-12">None added yet</div>
+        : (
+          <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+            {list.map(item => (
+              <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: (item.color || SIMPLE_LIST_COLORS[0]) + '15', border: `1.5px solid ${(item.color || SIMPLE_LIST_COLORS[0])}40`, borderRadius: 10, padding: '6px 10px' }}>
+                {editingId === item.id ? (
+                  <input className="fi" autoFocus style={{ padding: '2px 6px', fontSize: 12, width: 120 }}
+                    value={editName} onChange={e => setEditName(e.target.value)}
+                    onBlur={saveEdit}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveEdit(); } if (e.key === 'Escape') setEditingId(null); }} />
+                ) : (
+                  <span className="fw-700 fs-12" style={{ color: item.color || SIMPLE_LIST_COLORS[0], cursor: 'pointer' }}
+                    onClick={() => startEdit(item)} title="Click to rename">{item.name}</span>
+                )}
+                <button className="btn-icon" style={{ fontSize: 10 }} onClick={() => startEdit(item)} title="Rename">✏️</button>
+                <button className="btn-icon" style={{ fontSize: 10 }} onClick={() => setDelId(item.id)}>🗑️</button>
+              </div>
+            ))}
+          </div>
+        )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
+
 function BankAccountsSection() {
   const [banks, setBanks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1265,6 +1357,9 @@ export default function SettingsPage() {
       <DataFixSection />
       <BankAccountsSection />
       <CardsSection />
+      <SimpleListSection title="Companies" icon="🏢" collectionName="companies" hint="Used as the Company dropdown on Income → Salary Records" />
+      <SimpleListSection title="Agri Spending Categories" icon="🌱" collectionName="agriSpendCategories" hint="Used as the Category dropdown on Agriculture → Spended Amount" />
+      <SimpleListSection title="Agri Income Sources" icon="💰" collectionName="agriIncomeCategories" hint="Used as the Source dropdown on Agriculture → Received Amount" />
       <BrokerSection />
       <StockMasterSection />
       <CatSection type="income" label="Income" icon="💵" />
