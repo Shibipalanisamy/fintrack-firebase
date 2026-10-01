@@ -6,8 +6,188 @@ import {
   setDoc, getDoc,
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
-import { MonthYearFilter, ConfirmDelete } from '../components/UI';
+import { MonthYearFilter, ConfirmDelete, Modal, DateStepper } from '../components/UI';
+import { fmt, today } from '../utils/helpers';
+import { friendsLendingService } from '../utils/dbService';
 import toast from 'react-hot-toast';
+
+const BLANK_LENDING = { friendName: '', amountGiven: '', amountReturned: '0', dateOfLending: today(), notes: '' };
+
+// ─── Friends Lending Tracker (moved here from the removed Goals page) ──
+function LendingForm({ item, onSave, onClose }) {
+  const [f, setF] = useState({ ...BLANK_LENDING, ...(item || {}) });
+  const [saving, setSaving] = useState(false);
+  const ch = e => setF(p => ({ ...p, [e.target.name]: e.target.value }));
+
+  const given    = parseFloat(f.amountGiven) || 0;
+  const returned = parseFloat(f.amountReturned) || 0;
+  const pending  = Math.max(0, given - returned);
+
+  const submit = async () => {
+    if (!f.friendName || !f.amountGiven) { toast.error('Fill Friend Name and Amount Given'); return; }
+    setSaving(true);
+    try { await onSave({ ...f, pendingAmount: String(pending) }); } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="fg">
+        <label className="fl">Friend Name</label>
+        <input className="fi" name="friendName" value={f.friendName} onChange={ch} placeholder="e.g. Rahul" autoFocus />
+      </div>
+
+      <div className="frow">
+        <div className="fg">
+          <label className="fl">Amount Given (₹)</label>
+          <input className="fi" type="number" name="amountGiven" value={f.amountGiven} onChange={ch} placeholder="e.g. 10,000" min="0" />
+        </div>
+        <div className="fg">
+          <label className="fl">Amount Returned (₹)</label>
+          <input className="fi" type="number" name="amountReturned" value={f.amountReturned} onChange={ch} placeholder="e.g. 5,000" min="0" />
+        </div>
+      </div>
+
+      <div className="fg">
+        <label className="fl">Date of Lending</label>
+        <DateStepper name="dateOfLending" value={f.dateOfLending} onChange={ch} />
+      </div>
+
+      <div className="fg">
+        <label className="fl">Notes/Comments</label>
+        <input className="fi" name="notes" value={f.notes} onChange={ch} placeholder="e.g. for medical emergency" />
+      </div>
+
+      {(given > 0) && (
+        <div style={{ background: 'rgba(77,158,255,.08)', border: '1px solid rgba(77,158,255,.2)', borderRadius: 10, padding: '10px 14px', marginBottom: 12 }}>
+          <div className="flex justify-between fs-12"><span className="text-muted">Pending Amount</span><span className="fw-800" style={{ color: pending > 0 ? 'var(--red)' : 'var(--green)' }}>{fmt(pending)}</span></div>
+        </div>
+      )}
+
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? <span className="spin" /> : null} {item ? 'Update Entry' : 'Add Entry'}</button>
+      </div>
+    </div>
+  );
+}
+
+function FriendsLendingTracker() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal]     = useState(false);
+  const [edit, setEdit]       = useState(null);
+  const [delId, setDelId]     = useState(null);
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    setLoading(true);
+    try { setEntries(await friendsLendingService.getAll()); }
+    catch { toast.error('Failed to load lending entries'); }
+    finally { setLoading(false); }
+  };
+
+  const save = async (data) => {
+    try {
+      if (edit) { await friendsLendingService.update(edit.id, data); toast.success('Entry updated!'); }
+      else       { await friendsLendingService.create(data);          toast.success('Entry added!'); }
+      setModal(false); setEdit(null); load();
+    } catch { toast.error('Failed to save'); }
+  };
+
+  const del = async () => {
+    try { await friendsLendingService.delete(delId); toast.success('Deleted'); setDelId(null); load(); }
+    catch { toast.error('Failed'); }
+  };
+
+  const totalGiven    = entries.reduce((s, e) => s + (parseFloat(e.amountGiven) || 0), 0);
+  const totalReturned = entries.reduce((s, e) => s + (parseFloat(e.amountReturned) || 0), 0);
+  const totalPending   = entries.reduce((s, e) => s + Math.max(0, (parseFloat(e.amountGiven) || 0) - (parseFloat(e.amountReturned) || 0)), 0);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4" style={{ flexWrap: 'wrap', gap: 10 }}>
+        <div className="fw-900 fs-16">🤝 Friends Lending Tracker</div>
+        <button className="btn btn-primary" onClick={() => { setEdit(null); setModal(true); }}>+ Add Entry</button>
+      </div>
+
+      {entries.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
+          {[
+            { label: 'Total Given',    val: fmt(totalGiven),    c: 'var(--blue)',  icon: '💸' },
+            { label: 'Total Returned', val: fmt(totalReturned), c: 'var(--green)', icon: '✅' },
+            { label: 'Total Pending',  val: fmt(totalPending),  c: 'var(--red)',   icon: '⏳' },
+          ].map((s, i) => (
+            <div key={i} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', borderLeft: `3px solid ${s.c}` }}>
+              <div className="fs-11 text-muted">{s.icon} {s.label}</div>
+              <div className="fw-800 fs-14 mt-1" style={{ color: s.c }}>{s.val}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {loading
+        ? <div className="spin-center"><div className="spin spin-lg" /></div>
+        : entries.length === 0
+          ? (
+            <div className="card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+              <div style={{ fontSize: 64, marginBottom: 16 }}>🤝</div>
+              <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 8 }}>No lending entries yet</div>
+              <div className="text-muted fs-14 mb-5">Track money you've lent to friends and what's still pending</div>
+              <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 28px' }} onClick={() => setModal(true)}>+ Add First Entry</button>
+            </div>
+          )
+          : (
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Friend Name</th>
+                    <th style={{ textAlign: 'right' }}>Amount Given</th>
+                    <th style={{ textAlign: 'right' }}>Amount Returned</th>
+                    <th style={{ textAlign: 'right' }}>Pending Amount</th>
+                    <th>Date of Lending</th>
+                    <th>Notes/Comments</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.slice().sort((a, b) => new Date(b.dateOfLending) - new Date(a.dateOfLending)).map(e => {
+                    const given = parseFloat(e.amountGiven) || 0;
+                    const returned = parseFloat(e.amountReturned) || 0;
+                    const pending = Math.max(0, given - returned);
+                    return (
+                      <tr key={e.id}>
+                        <td className="fw-700">{e.friendName}</td>
+                        <td style={{ textAlign: 'right' }} className="fw-700">{fmt(given)}</td>
+                        <td style={{ textAlign: 'right' }} className="amt-g fw-700">{fmt(returned)}</td>
+                        <td style={{ textAlign: 'right', color: pending > 0 ? 'var(--red)' : 'var(--green)' }} className="fw-800">{fmt(pending)}</td>
+                        <td className="fs-12 text-muted">{e.dateOfLending ? new Date(e.dateOfLending).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
+                        <td className="fs-12 text-muted">{e.notes || '—'}</td>
+                        <td>
+                          <div className="flex gap-2">
+                            <button className="btn btn-secondary btn-sm" onClick={() => { setEdit(e); setModal(true); }}>✏️</button>
+                            <button className="btn-icon" onClick={() => setDelId(e.id)}>🗑️</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )
+      }
+
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Lending Entry' : '🤝 New Lending Entry'} onClose={() => { setModal(false); setEdit(null); }}>
+          <LendingForm item={edit} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
+        </Modal>
+      )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
 
 // ── These two always keep hardcoded values — never overwritten by expense sync ──
 const SYNC_EXCLUDED = ['room rent', 'stock investment'];
@@ -715,6 +895,7 @@ export default function BudgetPage() {
         {[
           { key: 'budget',  label: '📋 Budget Plan' },
           { key: 'summary', label: '📊 Summary' },
+          { key: 'lending', label: '🤝 Friends Lending' },
         ].map(t => (
           <button
             key={t.key}
@@ -1220,6 +1401,8 @@ export default function BudgetPage() {
       {/* ══════════════════════════════
            BUDGET PLAN TAB
       ══════════════════════════════ */}
+      {activeTab === 'lending' && <FriendsLendingTracker />}
+
       {activeTab === 'budget' && <>
 
       {/* ── Bank Allocation Matrix ── */}

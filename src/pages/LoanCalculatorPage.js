@@ -729,6 +729,7 @@ function GoldTracker() {
   const [qtyItem, setQtyItem] = useState(null); // row-wise +/-/×/÷ qty adjuster
   const [showBalanceBreakdown, setShowBalanceBreakdown] = useState(false); // '+' on Current Balance card
   const [showProductTable, setShowProductTable] = useState(false); // show/hide searchable product summary
+  const [showByPlace, setShowByPlace] = useState(false); // show/hide weight-by-location summary
   const [searchTerm, setSearchTerm] = useState('');
   const [sortKey, setSortKey] = useState('goldName'); // 'goldName' | 'goldSovereign' | 'loanStatus'
   const [sortDir, setSortDir] = useState('asc'); // 'asc' | 'desc'
@@ -825,6 +826,42 @@ function GoldTracker() {
   // several items can share one loan — summing per item would double-count it).
   const totalLoan = groups.reduce((s, g) => s + (g.groupStatus !== 'not_pledged' ? (parseFloat(g.loanAmount) || 0) : 0), 0);
 
+  // By-place summary: every item grouped purely by "location" (the place
+  // it's physically kept — e.g. "Indian Bank", "TMB"), regardless of which
+  // batch/date it was added in. Shows total weight per place, item count,
+  // and the sum of any loan amounts against pledged items there.
+  const placeMap = new Map();
+  for (const i of items) {
+    const place = i.location || 'Unspecified';
+    if (!placeMap.has(place)) placeMap.set(place, { place, items: [] });
+    placeMap.get(place).items.push(i);
+  }
+  const byPlace = Array.from(placeMap.values())
+    .map(p => ({
+      ...p,
+      totalWeight: p.items.reduce((s, x) => s + (parseFloat(x.goldSovereign) || 0), 0),
+      totalLoanAmount: p.items.reduce((s, x) => s + (x.loanStatus === 'pledged' ? (parseFloat(x.loanAmount) || 0) : 0), 0),
+    }))
+    .sort((a, b) => b.totalWeight - a.totalWeight);
+  const [selectedPlaceItems, setSelectedPlaceItems] = useState(new Set());
+  const togglePlaceItem = id => setSelectedPlaceItems(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const togglePlaceAll = (placeItems) => {
+    const ids = placeItems.map(i => i.id);
+    const allIn = ids.every(id => selectedPlaceItems.has(id));
+    setSelectedPlaceItems(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => allIn ? next.delete(id) : next.add(id));
+      return next;
+    });
+  };
+  const bulkDeletePlaceItems = async () => {
+    try {
+      await Promise.all([...selectedPlaceItems].map(id => goldTrackerService.delete(id)));
+      toast.success(`${selectedPlaceItems.size} item(s) deleted`);
+      setSelectedPlaceItems(new Set()); load();
+    } catch { toast.error('Failed to delete selected'); }
+  };
+
   const bulkDelete = async () => {
     const idsToDelete = groups.filter(g => selectedGroups.has(g.key)).flatMap(g => g.items.map(i => i.id));
     try {
@@ -840,6 +877,7 @@ function GoldTracker() {
         <div className="fw-900 fs-16">💎 Gold Tracker</div>
         <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
           <button className="btn btn-secondary" onClick={() => setShowProductTable(v => !v)}>{showProductTable ? '🙈 Hide' : '👁️ Show'} Product Table</button>
+          <button className="btn btn-secondary" onClick={() => setShowByPlace(v => !v)}>{showByPlace ? '🙈 Hide' : '📍 Show'} By Place</button>
           <button className="btn btn-primary" onClick={() => { setEdit(null); setAddCommon(null); setModal(true); }}>+ Add Item</button>
         </div>
       </div>
@@ -937,6 +975,66 @@ function GoldTracker() {
                   <tr><td colSpan={3} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No products match your search</td></tr>
                 )}
               </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showByPlace && (
+        <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+          <div className="flex items-center justify-between mb-3" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="fw-800 fs-13">📍 Weight By Place</div>
+            {selectedPlaceItems.size > 0 && (
+              <button className="btn btn-danger btn-sm" onClick={bulkDeletePlaceItems}>🗑️ Delete {selectedPlaceItems.size} Selected</button>
+            )}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{ width: 32 }}></th>
+                  <th>Description</th>
+                  <th>Total Weight</th>
+                  <th>Place</th>
+                  <th>Loan Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byPlace.map(p => (
+                  <Fragment key={p.place}>
+                    {p.items.map((i, idx) => (
+                      <tr key={i.id}>
+                        <td><input type="checkbox" checked={selectedPlaceItems.has(i.id)} onChange={() => togglePlaceItem(i.id)} /></td>
+                        <td className="fw-700">{i.goldName || i.partSection || '—'}</td>
+                        <td>{(parseFloat(i.goldSovereign) || 0).toFixed(2)}</td>
+                        <td>{idx === 0 ? <span className="fw-700">{p.place}</span> : ''}</td>
+                        <td>{i.loanStatus === 'pledged' ? fmt(parseFloat(i.loanAmount) || 0) : '—'}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: 'var(--bg3)' }}>
+                      <td><input type="checkbox" checked={p.items.every(i => selectedPlaceItems.has(i.id))} onChange={() => togglePlaceAll(p.items)} title="Select all in this place" /></td>
+                      <td className="fw-800 fs-12 text-muted">Subtotal — {p.place}</td>
+                      <td className="fw-900" style={{ color: 'var(--yellow, #eab308)' }}>{p.totalWeight.toFixed(2)}</td>
+                      <td></td>
+                      <td className="fw-800">{p.totalLoanAmount > 0 ? fmt(p.totalLoanAmount) : ''}</td>
+                    </tr>
+                  </Fragment>
+                ))}
+                {byPlace.length === 0 && (
+                  <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No items yet</td></tr>
+                )}
+              </tbody>
+              {byPlace.length > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: '2px solid var(--border)' }}>
+                    <td></td>
+                    <td className="fw-900">Grand Total</td>
+                    <td className="fw-900" style={{ color: 'var(--yellow, #eab308)' }}>{totalSovereign.toFixed(2)}</td>
+                    <td></td>
+                    <td className="fw-900">{fmt(byPlace.reduce((s, p) => s + p.totalLoanAmount, 0))}</td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
         </div>

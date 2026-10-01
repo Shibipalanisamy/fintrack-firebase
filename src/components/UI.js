@@ -9,15 +9,12 @@ const NAV = [
   { icon: '📊', label: 'Dashboard',      to: '/' },
   { icon: '💵', label: 'Income',          to: '/income' },
   { icon: '💸', label: 'Expenses',        to: '/expenses' },
-  { icon: '💳', label: 'Cards',           to: '/cards' },
   { icon: '📈', label: 'Portfolio',       to: '/portfolio' },
   { icon: '🏛️', label: 'Net Worth',       to: '/networth' },
-  { icon: '🎯', label: 'Goals',           to: '/goals' },
   { icon: '🧮', label: 'Loan Calculator', to: '/loans' },
-  { icon: '📉', label: 'Reports',         to: '/reports' },
-  { icon: '🏦', label: 'Banking',         to: '/banking' },
   { icon: '🛡️', label: 'Insurance',       to: '/insurance' },
   { icon: '📅', label: 'Budget Plan',     to: '/budget' },
+  { icon: '🌾', label: 'Agriculture',     to: '/agriculture' },
   { icon: '📋', label: 'Changelog', to: '/changelog' },
   { icon: '⚙️', label: 'Settings',        to: '/settings' },
   
@@ -57,7 +54,7 @@ export function Sidebar({ open, onClose }) {
   );
 }
 
-const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/reports': 'Reports', '/settings': 'Settings', '/goals': 'Financial Goals', '/cards': 'Card Management', '/banking': 'Banking' , '/budget': 'Budget Plan','/changelog': 'Changelog' };
+const TITLES = { '/': 'Dashboard', '/insurance': 'Insurance Tracker', '/income': 'Income', '/expenses': 'Expenses', '/portfolio': 'Stock Portfolio', '/networth': 'Assets & Liabilities', '/loans': 'Loan Calculator', '/settings': 'Settings', '/budget': 'Budget Plan', '/agriculture': 'Agriculture', '/changelog': 'Changelog' };
 
 export function Layout({ children }) {
   const { isDark, toggle } = useTheme();
@@ -67,13 +64,13 @@ export function Layout({ children }) {
     <div className="layout">
       <style>{`
         .tbl thead th {
-          background: linear-gradient(135deg, rgba(56, 139, 253, 0.15), rgba(34, 197, 94, 0.08)) !important;
-          color: #4d9eff !important;
+          background: var(--bg3) !important;
+          color: var(--t2) !important;
           font-weight: 800 !important;
           font-size: 12px !important;
           text-transform: uppercase !important;
           letter-spacing: 0.5px !important;
-          border-bottom: 2px solid rgba(77, 158, 255, 0.3) !important;
+          border-bottom: 1px solid var(--border) !important;
           padding: 11px 14px !important;
         }
         .tbl thead th:first-child { border-radius: 10px 0 0 0; }

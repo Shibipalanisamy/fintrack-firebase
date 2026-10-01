@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { db, auth } from '../utils/firebase';
+import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, getDocs, Timestamp } from 'firebase/firestore';
 import { categoryService, stockMasterService, brokerService } from '../utils/dbService';
 import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import { PALETTE } from '../utils/helpers';
@@ -282,6 +284,236 @@ function StockMasterSection() {
 
 
 // ─── Broker Master Section ─────────────────────────────────
+// ─── Bank Accounts (moved here from the removed Banking page — this app
+// only ever used bank accounts as a name list for "Paid Via" on Expenses
+// and the Add Stock form on Portfolio, both of which read the same
+// 'bankaccounts' collection directly, so nothing else needs to change) ───
+const uidOrNull = () => auth.currentUser?.uid || null;
+const bankAccountService = {
+  async getAll() {
+    const u = uidOrNull(); if (!u) return [];
+    const snap = await getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', u)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async create(data) {
+    const u = uidOrNull(); if (!u) throw new Error('Not logged in');
+    return addDoc(collection(db, 'bankaccounts'), { ...data, userId: u, createdAt: Timestamp.now() });
+  },
+  async update(id, data) { return updateDoc(doc(db, 'bankaccounts', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'bankaccounts', id)); },
+};
+const BANK_COLORS = ['#378ADD', '#E24B4A', '#22c55e', '#f97316', '#a78bfa', '#fb923c', '#0F6E56', '#f43f5e', '#fbbf24', '#38bdf8'];
+const BANK_ICONS = ['🏦', '🏧', '💳', '🏛️', '💰', '🏢', '🌐', '💵'];
+const BLANK_BANK = { name: '', shortName: '', accountNumber: '', ifsc: '', balance: '', color: BANK_COLORS[0], icon: '🏦', accountType: 'Savings', notes: '' };
+
+function BankAccountsSection() {
+  const [banks, setBanks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [delId, setDelId] = useState(null);
+  const [form, setForm] = useState(BLANK_BANK);
+
+  const load = async () => { setLoading(true); try { setBanks(await bankAccountService.getAll()); } catch { toast.error('Failed to load'); } finally { setLoading(false); } };
+  useEffect(() => { load(); }, []);
+
+  const ch = e => setForm(p => ({ ...p, [e.target.name]: e.target.value }));
+
+  const save = async () => {
+    if (!form.name.trim()) { toast.error('Enter bank/account name'); return; }
+    try {
+      const bal = parseFloat(form.balance) || 0;
+      const payload = { ...form, balance: bal, openingBalance: edit ? (parseFloat(form.openingBalance) || bal) : bal };
+      if (edit) { await bankAccountService.update(edit.id, payload); toast.success('Updated!'); }
+      else { await bankAccountService.create(payload); toast.success('Bank account added!'); }
+      setModal(false); setEdit(null); setForm(BLANK_BANK); load();
+    } catch { toast.error('Save failed'); }
+  };
+
+  const del = async () => { try { await bankAccountService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
+
+  return (
+    <div className="card mb-4">
+      <div className="flex justify-between items-center mb-3">
+        <div>
+          <div className="card-title" style={{ marginBottom: 2 }}>🏦 Bank Accounts <span className="text-muted fs-12">({banks.length})</span></div>
+          <div className="text-muted fs-12">Used as "Paid Via" options on Expenses and for stock purchases on Portfolio</div>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm(BLANK_BANK); setModal(true); }}>+ Add Bank</button>
+      </div>
+
+      {loading ? <div className="spin-center" style={{ height: 60 }}><div className="spin" /></div>
+        : banks.length === 0
+          ? <div className="empty" style={{ padding: '20px 0' }}><div className="empty-icon">🏦</div><div className="empty-title">No bank accounts yet</div></div>
+          : (
+            <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+              {banks.map(b => (
+                <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: (b.color || BANK_COLORS[0]) + '15', border: `1.5px solid ${(b.color || BANK_COLORS[0])}40`, borderRadius: 10, padding: '8px 12px' }}>
+                  <span style={{ fontSize: 18 }}>{b.icon || '🏦'}</span>
+                  <span className="fw-700 fs-13" style={{ color: b.color || BANK_COLORS[0] }}>{b.name}</span>
+                  <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(b); setForm({ ...BLANK_BANK, ...b, balance: String(b.balance ?? '') }); setModal(true); }}>✏️</button>
+                  <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(b.id)}>🗑️</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Bank Account' : '➕ Add Bank Account'} onClose={() => { setModal(false); setEdit(null); }}>
+          <div className="frow">
+            <div className="fg"><label className="fl">Bank / Account Name *</label><input className="fi" name="name" value={form.name} onChange={ch} placeholder="e.g. ICICI Bank, SBI Savings" required /></div>
+            <div className="fg"><label className="fl">Short Name</label><input className="fi" name="shortName" value={form.shortName} onChange={ch} placeholder="e.g. ICICI, SBI" /></div>
+          </div>
+          <div className="frow">
+            <div className="fg">
+              <label className="fl">Account Type</label>
+              <select className="fs" name="accountType" value={form.accountType} onChange={ch}>
+                {['Savings', 'Current', 'Salary', 'NRE', 'NRO', 'Cash Wallet', 'Digital Wallet'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="fg"><label className="fl">Opening / Current Balance (₹) *</label><input className="fi" type="number" name="balance" value={form.balance} onChange={ch} placeholder="0.00" step="0.01" required /></div>
+          </div>
+          <div className="frow">
+            <div className="fg"><label className="fl">Account Number (last 4)</label><input className="fi" name="accountNumber" value={form.accountNumber} onChange={ch} placeholder="e.g. 4521" maxLength={4} /></div>
+            <div className="fg"><label className="fl">IFSC Code</label><input className="fi" name="ifsc" value={form.ifsc} onChange={ch} placeholder="e.g. ICIC0001234" /></div>
+          </div>
+          <div className="fg">
+            <label className="fl">Color</label>
+            <div className="flex gap-2" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+              {BANK_COLORS.map(c => (<button key={c} type="button" onClick={() => setForm(p => ({ ...p, color: c }))} style={{ width: 28, height: 28, borderRadius: '50%', background: c, border: `3px solid ${form.color === c ? 'var(--text)' : 'transparent'}`, cursor: 'pointer' }} />))}
+            </div>
+          </div>
+          <div className="fg">
+            <label className="fl">Icon</label>
+            <div className="flex gap-2" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+              {BANK_ICONS.map(ic => (<button key={ic} type="button" onClick={() => setForm(p => ({ ...p, icon: ic }))} style={{ width: 36, height: 36, borderRadius: 8, border: `2px solid ${form.icon === ic ? 'var(--blue)' : 'var(--border2)'}`, background: form.icon === ic ? 'rgba(77,158,255,.15)' : 'var(--bg3)', fontSize: 18, cursor: 'pointer' }}>{ic}</button>))}
+            </div>
+          </div>
+          <div className="fg"><label className="fl">Notes</label><textarea className="fta" name="notes" value={form.notes} onChange={ch} rows={2} /></div>
+          <div className="modal-foot">
+            <button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add Account'}</button>
+          </div>
+        </Modal>
+      )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
+
+// ─── Cards (moved here from the removed Cards page — same reasoning: this
+// app only used cards as a name list for "Paid Via" on Expenses, which
+// reads the same 'cards' collection directly) ───
+const cardAccountService = {
+  async getAll() {
+    const u = uidOrNull(); if (!u) return [];
+    const snap = await getDocs(query(collection(db, 'cards'), where('userId', '==', u)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async create(data) {
+    const u = uidOrNull(); if (!u) throw new Error('Not logged in');
+    return addDoc(collection(db, 'cards'), { ...data, userId: u, createdAt: Timestamp.now() });
+  },
+  async update(id, data) { return updateDoc(doc(db, 'cards', id), data); },
+  async delete(id) { return deleteDoc(doc(db, 'cards', id)); },
+};
+const CARD_TYPES = ['Credit Card', 'Debit Card', 'Prepaid Card', 'Corporate Card'];
+const CARD_NETWORKS = ['Visa', 'Mastercard', 'RuPay', 'Amex', 'Diners'];
+const CARD_COLORS = ['#378ADD', '#E24B4A', '#639922', '#BA7517', '#534AB7', '#0F6E56', '#993C1D'];
+const BLANK_CARD = { name: '', bank: '', type: 'Credit Card', network: 'Visa', last4: '', creditLimit: '', outstanding: '', minDue: '', billingDate: '', graceDays: '15', color: CARD_COLORS[0], isActive: true, notes: '' };
+
+function CardsSection() {
+  const [cards, setCards] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [delId, setDelId] = useState(null);
+  const [form, setForm] = useState(BLANK_CARD);
+
+  const load = async () => { setLoading(true); try { setCards(await cardAccountService.getAll()); } catch { toast.error('Failed to load'); } finally { setLoading(false); } };
+  useEffect(() => { load(); }, []);
+
+  const ch = e => { const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value; setForm(p => ({ ...p, [e.target.name]: v })); };
+
+  const save = async () => {
+    if (!form.name.trim()) { toast.error('Enter card name'); return; }
+    try {
+      const payload = { ...form, creditLimit: parseFloat(form.creditLimit) || 0, outstanding: parseFloat(form.outstanding) || 0, minDue: parseFloat(form.minDue) || 0, billingDate: parseInt(form.billingDate) || 1, graceDays: parseInt(form.graceDays) || 15 };
+      if (edit) { await cardAccountService.update(edit.id, payload); toast.success('Updated!'); }
+      else { await cardAccountService.create(payload); toast.success('Card added!'); }
+      setModal(false); setEdit(null); setForm(BLANK_CARD); load();
+    } catch { toast.error('Save failed'); }
+  };
+
+  const del = async () => { try { await cardAccountService.delete(delId); toast.success('Deleted'); setDelId(null); load(); } catch { toast.error('Failed'); } };
+
+  return (
+    <div className="card mb-4">
+      <div className="flex justify-between items-center mb-3">
+        <div>
+          <div className="card-title" style={{ marginBottom: 2 }}>💳 Cards <span className="text-muted fs-12">({cards.length})</span></div>
+          <div className="text-muted fs-12">Used as "Paid Via" options on Expenses</div>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={() => { setEdit(null); setForm(BLANK_CARD); setModal(true); }}>+ Add Card</button>
+      </div>
+
+      {loading ? <div className="spin-center" style={{ height: 60 }}><div className="spin" /></div>
+        : cards.length === 0
+          ? <div className="empty" style={{ padding: '20px 0' }}><div className="empty-icon">💳</div><div className="empty-title">No cards yet</div></div>
+          : (
+            <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+              {cards.map(c => (
+                <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: (c.color || CARD_COLORS[0]) + '15', border: `1.5px solid ${(c.color || CARD_COLORS[0])}40`, borderRadius: 10, padding: '8px 12px' }}>
+                  <span className="fw-700 fs-13" style={{ color: c.color || CARD_COLORS[0] }}>{c.name}{c.last4 ? ` (••${c.last4})` : ''}</span>
+                  <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => { setEdit(c); setForm({ ...BLANK_CARD, ...c }); setModal(true); }}>✏️</button>
+                  <button className="btn-icon" style={{ fontSize: 11 }} onClick={() => setDelId(c.id)}>🗑️</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+      {modal && (
+        <Modal title={edit ? '✏️ Edit Card' : '➕ Add Card'} onClose={() => { setModal(false); setEdit(null); }}>
+          <div className="frow">
+            <div className="fg"><label className="fl">Card Name</label><input className="fi" name="name" value={form.name} onChange={ch} placeholder="e.g. ICICI Coral Credit" required /></div>
+            <div className="fg"><label className="fl">Bank / Issuer</label><input className="fi" name="bank" value={form.bank} onChange={ch} placeholder="e.g. ICICI, HDFC" /></div>
+          </div>
+          <div className="frow">
+            <div className="fg"><label className="fl">Card Type</label><select className="fs" name="type" value={form.type} onChange={ch}>{CARD_TYPES.map(t => <option key={t}>{t}</option>)}</select></div>
+            <div className="fg"><label className="fl">Network</label><select className="fs" name="network" value={form.network} onChange={ch}>{CARD_NETWORKS.map(n => <option key={n}>{n}</option>)}</select></div>
+          </div>
+          <div className="frow">
+            <div className="fg"><label className="fl">Last 4 digits</label><input className="fi" name="last4" value={form.last4} onChange={ch} placeholder="e.g. 4521" maxLength={4} /></div>
+            <div className="fg"><label className="fl">Card Color</label>
+              <div className="flex gap-2" style={{ marginTop: 6 }}>
+                {CARD_COLORS.map(c => (<button key={c} type="button" onClick={() => setForm(p => ({ ...p, color: c }))} style={{ width: 24, height: 24, borderRadius: '50%', background: c, border: `2px solid ${form.color === c ? 'var(--text)' : 'transparent'}`, cursor: 'pointer', flexShrink: 0 }} />))}
+              </div>
+            </div>
+          </div>
+          {form.type === 'Credit Card' && (
+            <>
+              <div className="frow">
+                <div className="fg"><label className="fl">Credit Limit (₹)</label><input className="fi" type="number" name="creditLimit" value={form.creditLimit} onChange={ch} placeholder="e.g. 3,00,000" min="0" /></div>
+                <div className="fg"><label className="fl">Current Outstanding (₹)</label><input className="fi" type="number" name="outstanding" value={form.outstanding} onChange={ch} placeholder="e.g. 42,000" min="0" /></div>
+              </div>
+              <div className="frow">
+                <div className="fg"><label className="fl">Minimum Due (₹)</label><input className="fi" type="number" name="minDue" value={form.minDue} onChange={ch} placeholder="e.g. 2,100" min="0" /></div>
+                <div className="fg"><label className="fl">Statement Date (day of month)</label><input className="fi" type="number" name="billingDate" value={form.billingDate} onChange={ch} placeholder="e.g. 5" min="1" max="31" /></div>
+              </div>
+              <div className="fg"><label className="fl">Grace Period (days after statement)</label><input className="fi" type="number" name="graceDays" value={form.graceDays} onChange={ch} placeholder="e.g. 15" min="0" max="45" /></div>
+            </>
+          )}
+          <div className="modal-foot">
+            <button className="btn btn-secondary" onClick={() => { setModal(false); setEdit(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={save}>{edit ? 'Update' : 'Add Card'}</button>
+          </div>
+        </Modal>
+      )}
+      {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+    </div>
+  );
+}
+
 function BrokerSection() {
   const { user } = useAuth();
   const [brokers, setBrokers] = useState([]);
@@ -1031,6 +1263,8 @@ export default function SettingsPage() {
       <BackupSection />
       <DemergerSection />
       <DataFixSection />
+      <BankAccountsSection />
+      <CardsSection />
       <BrokerSection />
       <StockMasterSection />
       <CatSection type="income" label="Income" icon="💵" />

@@ -1,47 +1,13 @@
 import { useState, useEffect } from 'react';
-import { db, auth } from '../utils/firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { insuranceService, recurringService, expenseService } from '../utils/dbService';
 import { fmt, fmtDate, fmtDateInput, today } from '../utils/helpers';
 import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
 import toast from 'react-hot-toast';
 import { differenceInDays, addDays, format } from 'date-fns';
 
-const uid = () => auth.currentUser?.uid;
-
 const INSURANCE_TYPES = ['Life Insurance', 'Term Insurance', 'Health Insurance', 'Vehicle Insurance', 'Home Insurance', 'Accident Insurance', 'Child Plan', 'Endowment Plan', 'ULIP', 'PPF', 'LIC', 'Other'];
 const PAYMENT_FREQ = ['Monthly', 'Quarterly', 'Half Yearly', 'Yearly'];
 const STATUS_COLORS = { active: 'var(--green)', expired: 'var(--red)', due_soon: 'var(--orange)', inactive: 'var(--t3)' };
-
-const insuranceService = {
-  async getAll() {
-    const q = query(collection(db, 'insurance'), where('userId', '==', uid()));
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({
-      id: d.id, ...d.data(),
-      startDate: d.data().startDate?.toDate?.() || new Date(d.data().startDate),
-      dueDate: d.data().dueDate?.toDate?.() || new Date(d.data().dueDate),
-      maturityDate: d.data().maturityDate ? (d.data().maturityDate?.toDate?.() || new Date(d.data().maturityDate)) : null,
-    }));
-  },
-  async create(data) {
-    return addDoc(collection(db, 'insurance'), {
-      ...data, userId: uid(),
-      startDate: Timestamp.fromDate(new Date(data.startDate)),
-      dueDate: Timestamp.fromDate(new Date(data.dueDate)),
-      maturityDate: data.maturityDate ? Timestamp.fromDate(new Date(data.maturityDate)) : null,
-      createdAt: Timestamp.now()
-    });
-  },
-  async update(id, data) {
-    return updateDoc(doc(db, 'insurance', id), {
-      ...data,
-      startDate: Timestamp.fromDate(new Date(data.startDate)),
-      dueDate: Timestamp.fromDate(new Date(data.dueDate)),
-      maturityDate: data.maturityDate ? Timestamp.fromDate(new Date(data.maturityDate)) : null,
-    });
-  },
-  async delete(id) { return deleteDoc(doc(db, 'insurance', id)); }
-};
 
 function getStatus(item) {
   const today_date = new Date();
@@ -51,6 +17,59 @@ function getStatus(item) {
   if (daysUntilDue < 0) return { label: 'Overdue', color: STATUS_COLORS.expired, days: Math.abs(daysUntilDue) };
   if (daysUntilDue <= 30) return { label: `Due in ${daysUntilDue}d`, color: STATUS_COLORS.due_soon, days: daysUntilDue };
   return { label: 'Active', color: STATUS_COLORS.active, days: daysUntilDue };
+}
+
+// ─── Due Soon Popup ──────────────────────────────────────────
+// Same promo-card pattern as the Recurring tab's "matured" popup — pops up
+// automatically once a policy enters its due-soon window, so it can't be
+// missed the way a banner further down the page can.
+function DueSoonPopup({ items, onPayNow, onDismiss, onClose, paying }) {
+  const item = items[0];
+  if (!item) return null;
+  const status = getStatus(item);
+  const isOverdue = status.label === 'Overdue';
+  return (
+    <div className="modal-overlay" style={{ zIndex: 200 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        maxWidth: 340, width: '92%', borderRadius: 22, overflow: 'hidden',
+        background: isOverdue ? 'linear-gradient(160deg, #dc2626, #991b1b)' : 'linear-gradient(160deg, #f97316, #ea580c)',
+        position: 'relative', boxShadow: '0 20px 60px rgba(0,0,0,.4)', textAlign: 'center', padding: '30px 22px 24px',
+      }}>
+        <div style={{ fontSize: 46, marginBottom: 6 }}>{isOverdue ? '🚨' : '⚠️'}</div>
+        <div style={{ color: '#fff', fontWeight: 800, fontSize: 22, lineHeight: 1.25, marginBottom: 6 }}>
+          {isOverdue ? `${item.name} is Overdue!` : `${item.name} is Due Soon`}
+        </div>
+        <div style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, marginBottom: 18 }}>
+          Pay before it lapses — due {fmtDate(item.dueDate)}
+        </div>
+        <div style={{ background: '#fff', borderRadius: 16, padding: '16px 14px', marginBottom: 18 }}>
+          <div style={{ fontSize: 13, color: '#7c2d12', fontWeight: 700, marginBottom: 4 }}>{item.name} ({item.company})</div>
+          <div style={{ fontSize: 12, color: '#9a3412' }}>
+            Premium: {fmt(item.premiumAmount)} · {item.paymentFrequency}
+          </div>
+        </div>
+        <button onClick={() => onPayNow(item)} disabled={paying} style={{
+          width: '100%', padding: '13px', borderRadius: 30, border: 'none', background: '#fff',
+          color: isOverdue ? '#dc2626' : '#ea580c', fontWeight: 800, fontSize: 15, cursor: 'pointer', marginBottom: 10,
+        }}>
+          {paying ? '...' : '💰 Pay Now'}
+        </button>
+        <button onClick={() => onDismiss(item)} style={{
+          width: '100%', padding: '10px', borderRadius: 30, border: '1px solid rgba(255,255,255,.5)', background: 'transparent',
+          color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+        }}>
+          Not now
+        </button>
+        {items.length > 1 && (
+          <div style={{ color: 'rgba(255,255,255,.75)', fontSize: 11, marginTop: 10 }}>+{items.length - 1} more policy{items.length > 2 ? 'ies' : ''} due soon</div>
+        )}
+        <button onClick={onClose} style={{
+          position: 'absolute', top: 10, right: 10, width: 30, height: 30, borderRadius: '50%',
+          border: 'none', background: 'rgba(0,0,0,.2)', color: '#fff', fontSize: 15, cursor: 'pointer', lineHeight: 1,
+        }}>✕</button>
+      </div>
+    </div>
+  );
 }
 
 function InsuranceForm({ item, onSave, onClose }) {
@@ -132,6 +151,9 @@ export default function InsurancePage() {
   const [filter, setFilter] = useState('all');
   const [sortField, setSortField] = useState('dueDate');
   const [sortDir, setSortDir] = useState('asc');
+  const [showDueSoonPopup, setShowDueSoonPopup] = useState(false);
+  const [dueSoonDismissedIds, setDueSoonDismissedIds] = useState(new Set()); // dismissed this session, without writing to DB
+  const [paying, setPaying] = useState(false);
 
   const toggleSort = (field) => {
     if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -179,6 +201,54 @@ export default function InsurancePage() {
   const totalMaturity = items.reduce((s, i) => s + (i.maturityAmount || 0), 0);
   const dueSoon = items.filter(i => { const s = getStatus(i); return s.days !== null && s.days <= 30; });
   const overdue = items.filter(i => { const s = getStatus(i); return s.label === 'Overdue'; });
+
+  // Popup only re-triggers for a given policy once its due date actually
+  // changes (e.g. after payment) — dueSoonAcknowledgedDate stores which
+  // due date the user already dismissed/paid, so next cycle pops up fresh
+  // instead of nagging every time the page loads.
+  const dueSoonPopupItems = dueSoon.filter(i =>
+    !dueSoonDismissedIds.has(i.id) && i.dueSoonAcknowledgedDate !== fmtDateInput(i.dueDate)
+  );
+  useEffect(() => {
+    if (dueSoonPopupItems.length > 0) setShowDueSoonPopup(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items.length]);
+
+  const dismissDueSoon = async (item) => {
+    setDueSoonDismissedIds(prev => new Set(prev).add(item.id));
+    try { await insuranceService.update(item.id, { ...item, dueSoonAcknowledgedDate: fmtDateInput(item.dueDate) }); }
+    catch { /* stays dismissed for this session even if the write fails */ }
+  };
+
+  // "Pay Now" — advances the due date by the policy's own payment
+  // frequency, logs a matching Expense entry (so the List tab reflects it
+  // without a separate manual step), and clears the popup for this cycle.
+  const FREQ_DAYS = { Monthly: 30, Quarterly: 91, 'Half Yearly': 182, Yearly: 365 };
+  const payNow = async (item) => {
+    setPaying(true);
+    try {
+      const days = FREQ_DAYS[item.paymentFrequency] || 365;
+      const newDue = addDays(new Date(item.dueDate), days);
+      const newDueStr = format(newDue, 'yyyy-MM-dd');
+      await insuranceService.update(item.id, { ...item, dueDate: newDueStr, dueSoonAcknowledgedDate: '' });
+      try {
+        await expenseService.create({
+          category: 'Insurance', itemName: `${item.name} Premium`,
+          amount: parseFloat(item.premiumAmount) || 0, date: today(),
+          notes: `[Insurance] ${item.name} (${item.company}) — next due ${fmtDate(newDueStr)}`,
+        });
+      } catch { /* the insurance update already succeeded — expense logging is a best-effort convenience */ }
+      setDueSoonDismissedIds(prev => new Set(prev).add(item.id));
+      toast.success(`Paid! Next due ${fmtDate(newDueStr)}`);
+      if (dueSoonPopupItems.length <= 1) setShowDueSoonPopup(false);
+      load();
+    } catch (err) {
+      console.error('Insurance pay-now failed:', err);
+      toast.error('Payment update failed: ' + (err?.message || 'unknown error'));
+    } finally {
+      setPaying(false);
+    }
+  };
 
   const SortTh = ({ field, label, align = 'left' }) => (
     <th style={{ textAlign: align, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => toggleSort(field)}>
@@ -316,6 +386,15 @@ export default function InsurancePage() {
 
       {modal && <Modal title={edit ? '✏️ Edit Insurance' : '➕ Add Insurance Policy'} onClose={() => { setModal(false); setEdit(null); }}><InsuranceForm item={edit} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+      {showDueSoonPopup && dueSoonPopupItems.length > 0 && (
+        <DueSoonPopup
+          items={dueSoonPopupItems}
+          paying={paying}
+          onPayNow={payNow}
+          onDismiss={(item) => { dismissDueSoon(item); if (dueSoonPopupItems.length <= 1) setShowDueSoonPopup(false); }}
+          onClose={() => setShowDueSoonPopup(false)}
+        />
+      )}
     </div>
   );
 }

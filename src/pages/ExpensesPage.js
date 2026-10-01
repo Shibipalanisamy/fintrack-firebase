@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { db, auth } from '../utils/firebase';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
-import { expenseService, categoryService, recurringService, groupService } from '../utils/dbService';
+import { expenseService, categoryService, recurringService, groupService, insuranceService, dividendService, stockMasterService } from '../utils/dbService';
 import { fmt, fmtDate, fmtDateInput, today, exportCSV, importCSV } from '../utils/helpers';
 import { Modal, ConfirmDelete, MonthYearFilter, DateStepper, DateRangeFilter } from '../components/UI';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Legend, CartesianGrid, LineChart, Line, ReferenceLine } from 'recharts';
 import { PALETTE } from '../utils/helpers';
+import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 
 // ─── Indian-time formatter for updatedAt ──────────────────
@@ -198,232 +199,6 @@ function ExpForm({ item, cats, onSave, onClose }) {
 }
 
 // ─── Percentage Tab ────────────────────────────────────────
-function PercentageTab({ items, showFixed, isFixedCat, allItems, cats = [], onBudgetSave }) {
-  const total = items.reduce((s, i) => s + +i.amount, 0);
-  const catMap = {};
-  items.forEach(i => { catMap[i.category] = (catMap[i.category] || 0) + +i.amount; });
-  const sorted = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
-
-  // Budget state — stored in Firestore on the category document (budget field)
-  const [editBudget, setEditBudget] = useState(null); // category name being edited
-  const [budgetInput, setBudgetInput] = useState('');
-  const [savingBudget, setSavingBudget] = useState(false);
-
-  // Build budgets map from cats prop: { categoryName: amount }
-  const budgets = {};
-  cats.forEach(c => { if (c.budget > 0) budgets[c.name] = c.budget; });
-
-  const saveBudget = async (cat, val) => {
-    const catObj = cats.find(c => c.name === cat);
-    if (!catObj) return;
-    setSavingBudget(true);
-    try {
-      const budgetVal = parseFloat(val) || 0;
-      await onBudgetSave(catObj.id, { budget: budgetVal > 0 ? budgetVal : 0 });
-    } finally {
-      setSavingBudget(false);
-      setEditBudget(null);
-    }
-  };
-  const totalBudget = Object.values(budgets).reduce((s, v) => s + v, 0);
-  const budgetedCats = Object.keys(budgets).filter(k => budgets[k] > 0);
-  const pieData = sorted.slice(0, 10).map(([name, value], idx) => ({ name, value, color: PALETTE[idx % PALETTE.length] }));
-
-  // Category sub-tab: 'all' | 'variable' | 'fixed'
-  const [catTab, setCatTab] = useState('all');
-  const sortedVariable = sorted.filter(([cat]) => !isFixedCat(cat));
-  const sortedFixed    = sorted.filter(([cat]) =>  isFixedCat(cat));
-  const catTabRows     = catTab === 'variable' ? sortedVariable : catTab === 'fixed' ? sortedFixed : sorted;
-  const catTabTotal    = catTabRows.reduce((s, [, amt]) => s + amt, 0);
-
-  const varItems  = allItems ? allItems.filter(i => !isFixedCat(i.category)) : items;
-  const fixItems  = allItems ? allItems.filter(i => isFixedCat(i.category)) : [];
-  const varTotal  = varItems.reduce((s,i) => s + +i.amount, 0);
-  const fixTotal  = fixItems.reduce((s,i) => s + +i.amount, 0);
-  const grandTotal = (allItems || items).reduce((s,i) => s + +i.amount, 0);
-
-  const buildPie = (list) => {
-    const m = {}; list.forEach(i => { m[i.category] = (m[i.category]||0) + +i.amount; });
-    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([name,value],idx)=>({ name, value, color: PALETTE[idx%PALETTE.length] }));
-  };
-  const varPie = buildPie(varItems);
-  const fixPie = buildPie(fixItems);
-
-  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📊</div><div className="empty-title">No data</div><div className="empty-sub">{showFixed ? 'Add expenses to see breakdown' : 'No variable expenses found'}</div></div></div>;
-
-  const PieCard = ({ title, data, chartTotal, color }) => (
-    <div className="card" style={{ display:'flex', flexDirection:'column', gap:12 }}>
-      <div className="card-title">{title}</div>
-      <div style={{ display:'flex', alignItems:'center', gap:16, flexWrap:'wrap' }}>
-        <ResponsiveContainer width={150} height={150}>
-          <PieChart><Pie data={data} cx="50%" cy="50%" innerRadius={40} outerRadius={70} dataKey="value" paddingAngle={2}>{data.map((e,i)=><Cell key={i} fill={e.color}/>)}</Pie><Tooltip formatter={(v)=>[`Rs ${fmt(v)}`,'']} /></PieChart>
-        </ResponsiveContainer>
-        <div style={{ flex:1 }}>
-          {data.map((d,i)=>(
-            <div key={i} className="flex justify-between items-center mb-2">
-              <div className="flex items-center gap-2 fs-12"><span style={{ width:8,height:8,borderRadius:'50%',background:d.color,flexShrink:0 }}/><span className="text-muted">{d.name}</span></div>
-              <span className="fw-700 fs-12" style={{ color:d.color }}>{chartTotal > 0 ? ((d.value/chartTotal)*100).toFixed(1) : 0}%</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
-  return (
-    <div>
-      {/* Split summary cards */}
-      {allItems && (
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
-          <div style={{ background:'rgba(249,115,22,.06)', border:'1px solid rgba(249,115,22,.2)', borderRadius:12, padding:14 }}>
-            <div className="fw-700 fs-13 mb-1" style={{ color:'var(--orange)' }}>📌 Fixed Expenses</div>
-            <div className="fw-900 fs-20" style={{ color:'var(--orange)' }}>{fmt(fixTotal)}</div>
-            <div className="fs-11 text-muted mt-1">{grandTotal>0?((fixTotal/grandTotal)*100).toFixed(1):0}% of total spend</div>
-          </div>
-          <div style={{ background:'rgba(77,158,255,.06)', border:'1px solid rgba(77,158,255,.2)', borderRadius:12, padding:14 }}>
-            <div className="fw-700 fs-13 mb-1" style={{ color:'var(--blue)' }}>🔀 Variable Expenses</div>
-            <div className="fw-900 fs-20" style={{ color:'var(--blue)' }}>{fmt(varTotal)}</div>
-            <div className="fs-11 text-muted mt-1">{grandTotal>0?((varTotal/grandTotal)*100).toFixed(1):0}% of total spend</div>
-          </div>
-        </div>
-      )}
-
-      {/* Dual charts */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))', gap:16, marginBottom:16 }}>
-        {varPie.length > 0 && <PieCard title="🔀 Variable Expenses" data={varPie} chartTotal={varTotal} />}
-        {showFixed && fixPie.length > 0 && <PieCard title="📌 Fixed Expenses" data={fixPie} chartTotal={fixTotal} />}
-      </div>
-
-      {/* Budget summary strip */}
-      {budgetedCats.length > 0 && (
-        <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginBottom:12 }}>
-          <div style={{ background:'rgba(77,158,255,.07)', border:'1px solid rgba(77,158,255,.2)', borderRadius:10, padding:'8px 14px', fontSize:12 }}>
-            <span className="text-muted">Total Budget: </span><span className="fw-800" style={{ color:'var(--blue)' }}>{fmt(totalBudget)}</span>
-          </div>
-          <div style={{ background: total <= totalBudget ? 'rgba(34,197,94,.07)' : 'rgba(244,63,94,.07)', border:`1px solid ${total <= totalBudget ? 'rgba(34,197,94,.2)' : 'rgba(244,63,94,.2)'}`, borderRadius:10, padding:'8px 14px', fontSize:12 }}>
-            <span className="text-muted">Spent vs Budget: </span>
-            <span className="fw-800" style={{ color: total <= totalBudget ? 'var(--green)' : 'var(--red)' }}>
-              {total <= totalBudget ? `✅ ${fmt(totalBudget - total)} under` : `⚠️ ${fmt(total - totalBudget)} over`}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Full table with budget */}
-      <div className="card">
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-          <div className="card-title" style={{ marginBottom:0 }}>📊 Category-wise Breakdown</div>
-          <div className="fs-11 text-muted">Click 🎯 to set budget per category</div>
-        </div>
-
-        {/* Fixed / Variable sub-tabs */}
-        <div style={{ display:'flex', gap:6, marginBottom:12 }}>
-          {[
-            { key:'all',      label:`All (${sorted.length})`,           color:'var(--text)' },
-            { key:'variable', label:`🔀 Variable (${sortedVariable.length})`, color:'var(--blue)' },
-            { key:'fixed',    label:`📌 Fixed (${sortedFixed.length})`,      color:'var(--orange)' },
-          ].map(t => (
-            <button key={t.key} onClick={() => setCatTab(t.key)}
-              style={{
-                padding:'5px 14px', borderRadius:20, fontSize:12, fontWeight:700, cursor:'pointer', border:'1.5px solid',
-                borderColor: catTab === t.key ? t.color : 'var(--border2)',
-                background:  catTab === t.key ? (t.key==='variable' ? 'rgba(77,158,255,.12)' : t.key==='fixed' ? 'rgba(249,115,22,.12)' : 'var(--bg3)') : 'var(--bg3)',
-                color:       catTab === t.key ? t.color : 'var(--t3)',
-                transition:  'all .15s',
-              }}>{t.label}</button>
-          ))}
-        </div>
-
-        {catTabRows.length === 0
-          ? <div style={{ padding:'24px 0', textAlign:'center', color:'var(--t3)', fontSize:13 }}>
-              No {catTab === 'fixed' ? 'fixed' : 'variable'} expense categories found.
-            </div>
-          : <div className="tbl-wrap"><table className="tbl">
-          <thead><tr>
-            <th>#</th><th>Category</th>
-            <th style={{ textAlign:'right' }}>Spent</th>
-            <th style={{ textAlign:'right' }}>Budget</th>
-            <th style={{ textAlign:'right' }}>Balance</th>
-            <th style={{ textAlign:'right' }}>%</th>
-            <th>Bar</th>
-            <th></th>
-          </tr></thead>
-          <tbody>{catTabRows.map(([cat, amt], i) => {
-            const pct      = catTabTotal > 0 ? ((amt / catTabTotal) * 100).toFixed(1) : '0.0';
-            const totalPct = total > 0        ? ((amt / total)       * 100).toFixed(1) : '0.0';
-            const budget = budgets[cat] || 0;
-            const balance = budget > 0 ? budget - amt : null;
-            const overBudget = balance !== null && balance < 0;
-            const budgetPct = budget > 0 ? Math.min(100, (amt / budget) * 100) : parseFloat(pct);
-            const isFixed = isFixedCat(cat);
-            return (
-              <tr key={cat} style={{ background: overBudget ? 'rgba(244,63,94,.04)' : 'transparent' }}>
-                <td className="text-muted fs-12">{i + 1}</td>
-                <td className="fw-600 fs-13">
-                  <div className="flex items-center gap-1">
-                    {cat}
-                    {isFixed && catTab === 'all' && <span style={{ fontSize:9, background:'rgba(249,115,22,.15)', color:'var(--orange)', borderRadius:20, padding:'1px 6px', fontWeight:700 }}>📌</span>}
-                    {overBudget && <span style={{ fontSize:10, background:'rgba(244,63,94,.15)', color:'var(--red)', borderRadius:20, padding:'1px 6px', fontWeight:700 }}>Over</span>}
-                  </div>
-                </td>
-                <td style={{ textAlign:'right' }}><span className="amt amt-r">{fmt(amt)}</span></td>
-                <td style={{ textAlign:'right' }}>
-                  {editBudget === cat ? (
-                    <div className="flex gap-1" style={{ justifyContent:'flex-end' }}>
-                      <input autoFocus type="number" value={budgetInput} onChange={e => setBudgetInput(e.target.value)}
-                        onKeyDown={e => { if(e.key==='Enter') saveBudget(cat, budgetInput); if(e.key==='Escape') setEditBudget(null); }}
-                        style={{ width:80, padding:'3px 6px', borderRadius:6, border:'1.5px solid var(--blue)', background:'var(--bg3)', color:'var(--text)', fontSize:12, outline:'none' }}
-                        placeholder="0" min="0" />
-                      <button onClick={() => saveBudget(cat, budgetInput)} disabled={savingBudget} style={{ background:'var(--green)', border:'none', borderRadius:5, padding:'3px 7px', color:'#fff', cursor:'pointer', fontSize:11, fontWeight:700 }}>{savingBudget ? '…' : '✓'}</button>
-                      <button onClick={() => setEditBudget(null)} style={{ background:'var(--bg3)', border:'1px solid var(--border2)', borderRadius:5, padding:'3px 7px', cursor:'pointer', fontSize:11, color:'var(--t3)' }}>✕</button>
-                    </div>
-                  ) : (
-                    <span className={`fw-600 fs-12 ${budget>0?'':'text-muted'}`} style={{ color: budget>0?'var(--blue)':undefined }}>
-                      {budget > 0 ? fmt(budget) : '—'}
-                    </span>
-                  )}
-                </td>
-                <td style={{ textAlign:'right' }}>
-                  {balance !== null
-                    ? <span className={`fw-700 fs-12 ${balance >= 0 ? 'amt-g' : 'amt-r'}`}>{balance >= 0 ? '+' : ''}{fmt(balance)}</span>
-                    : <span className="text-muted fs-12">—</span>}
-                </td>
-                <td style={{ textAlign:'right' }}>
-                  <span className="fw-700" style={{ color: PALETTE[i % PALETTE.length] }}>{pct}%</span>
-                  {catTab !== 'all' && <div className="fs-10 text-muted">{totalPct}% of all</div>}
-                </td>
-                <td style={{ width:110 }}>
-                  <div style={{ background:'var(--bg3)', borderRadius:4, height:6, overflow:'hidden' }}>
-                    <div style={{ height:'100%', width:`${budgetPct}%`, background: overBudget ? 'var(--red)' : PALETTE[i % PALETTE.length], borderRadius:4, transition:'width .4s' }} />
-                  </div>
-                  {budget > 0 && <div className="fs-10 text-muted mt-1">{(amt/budget*100).toFixed(0)}% of budget</div>}
-                </td>
-                <td>
-                  <button title="Set budget" onClick={() => { setEditBudget(cat); setBudgetInput(budget > 0 ? String(budget) : ''); }}
-                    style={{ background:'none', border:'none', cursor:'pointer', fontSize:13, color:'var(--t3)', padding:'2px 4px' }}>🎯</button>
-                </td>
-              </tr>
-            );
-          })}</tbody>
-          <tfoot><tr>
-            <td colSpan={2} className="text-muted fs-12" style={{ padding:'10px 14px' }}>
-              {catTab === 'all' ? 'TOTAL' : catTab === 'fixed' ? '📌 FIXED TOTAL' : '🔀 VARIABLE TOTAL'}
-            </td>
-            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(catTabTotal)}</span></td>
-            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-700" style={{ color:'var(--blue)' }}>{totalBudget > 0 ? fmt(totalBudget) : '—'}</span></td>
-            <td style={{ textAlign:'right', padding:'10px 14px' }}>
-              {totalBudget > 0 && <span className={`fw-800 ${catTabTotal <= totalBudget ? 'amt-g' : 'amt-r'}`}>{catTabTotal <= totalBudget ? '+' : ''}{fmt(totalBudget - catTabTotal)}</span>}
-            </td>
-            <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="fw-800">100%</span></td>
-            <td colSpan={2} />
-          </tr></tfoot>
-        </table></div>}
-      </div>
-    </div>
-  );
-}
-
-// ─── Group Summary Tab ─────────────────────────────────────
 // ─── Group Form Modal ──────────────────────────────────────
 const ICON_OPTIONS = ['🏠','📈','🚗','🎫','🏥','🍔','👗','🎓','💡','🛒','💰','🎮','✈️','🐾','🏋️','📱','🛠️','🎁','🧴','🏦'];
 const COLOR_OPTIONS = ['#f97316','#22c55e','#93c5fd','#a78bfa','#fbbf24','#f43f5e','#38bdf8','#fb7185','#10d98a','#e879f9','#94a3b8','#facc15'];
@@ -524,236 +299,6 @@ function GroupForm({ group, allCats, onSave, onClose }) {
 }
 
 // ─── Group Summary Tab ─────────────────────────────────────
-function GroupSummaryTab({ items, showFixed, cats }) {
-  const [groups, setGroups]         = useState([]);
-  const [loadingGroups, setLoadingGroups] = useState(true);
-  const [expanded, setExpanded]     = useState({});
-  const [othersExpanded, setOthersExpanded] = useState(false);
-  const [groupModal, setGroupModal] = useState(false);   // false | 'add' | groupObj
-  const [deleteGroup, setDeleteGroup] = useState(null);  // groupObj to confirm delete
-  const [deleting, setDeleting]     = useState(false);
-  const loadGroups = async () => {
-    setLoadingGroups(true);
-    try {
-      let g = await groupService.getAll();
-      if (g.length === 0) {
-        await groupService.seedDefaults(auth.currentUser?.uid);
-        g = await groupService.getAll();
-      }
-      setGroups(g);
-    } catch { toast.error('Failed to load groups'); }
-    finally { setLoadingGroups(false); }
-  };
-
-  useEffect(() => { loadGroups(); }, []);
-
-  const total = items.reduce((s, i) => s + +i.amount, 0);
-
-  const getGroupItems = (g) => items.filter(i => g.categories.some(c => c.toLowerCase() === i.category?.toLowerCase()));
-  const getGroupTotal = (g) => getGroupItems(g).reduce((s, i) => s + +i.amount, 0);
-
-  const ungroupedItems = items.filter(i => !groups.some(g => g.categories.some(c => c.toLowerCase() === i.category?.toLowerCase())));
-  const ungroupedTotal = ungroupedItems.reduce((s, i) => s + +i.amount, 0);
-
-  const saveGroup = async (data) => {
-    try {
-      if (groupModal === 'add') {
-        await groupService.create({ ...data, order: groups.length });
-      } else {
-        await groupService.update(groupModal.id, data);
-      }
-      toast.success(groupModal === 'add' ? 'Group created!' : 'Group updated!');
-      setGroupModal(false);
-      loadGroups();
-    } catch { toast.error('Failed to save group'); }
-  };
-
-  const confirmDelete = async () => {
-    if (!deleteGroup) return;
-    setDeleting(true);
-    try {
-      await groupService.delete(deleteGroup.id);
-      toast.success('Group deleted');
-      setDeleteGroup(null);
-      loadGroups();
-    } catch { toast.error('Failed to delete'); }
-    finally { setDeleting(false); }
-  };
-
-  if (loadingGroups) return <div className="spin-center"><div className="spin spin-lg" /></div>;
-  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📋</div><div className="empty-title">No data</div><div className="empty-sub">{showFixed ? 'Add expenses to see group summary' : 'No variable expenses found'}</div></div></div>;
-
-  return (
-    <div>
-      {/* Header row with Add Group button */}
-      <div className="flex items-center justify-between mb-3" style={{ flexWrap: 'wrap', gap: 8 }}>
-        <div className="fw-700 fs-14" style={{ color: 'var(--text)' }}>🗂️ Expense Groups</div>
-        <button className="btn btn-primary btn-sm" onClick={() => setGroupModal('add')}>+ Add Group</button>
-      </div>
-
-      {!showFixed && (
-        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:12, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
-          🔀 Variable expenses only — Fixed expenses excluded
-        </div>
-      )}
-
-      {/* Summary cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 16 }}>
-        {groups.map(g => {
-          const amt = getGroupTotal(g);
-          const pct = total > 0 ? ((amt / total) * 100).toFixed(1) : 0;
-          
-          return (
-            <div key={g.id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: 14, borderLeft: `4px solid ${g.color}`, position: 'relative' }}>
-              {/* Edit / Delete buttons */}
-              <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4 }}>
-                <button onClick={e => { e.stopPropagation(); setGroupModal(g); }}
-                  style={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 6, padding: '2px 6px', fontSize: 11, cursor: 'pointer', color: 'var(--t3)' }} title="Edit group">✏️</button>
-                <button onClick={e => { e.stopPropagation(); setDeleteGroup(g); }}
-                  style={{ background: 'rgba(244,63,94,.08)', border: '1px solid rgba(244,63,94,.2)', borderRadius: 6, padding: '2px 6px', fontSize: 11, cursor: 'pointer', color: 'var(--red)' }} title="Delete group">🗑️</button>
-              </div>
-              <div style={{ fontSize: 22, marginBottom: 4 }}>{g.icon}</div>
-              <div className="fs-12 fw-700 text-muted mb-1" style={{ paddingRight: 48 }}>{g.label}</div>
-              <div style={{ fontSize: 16, fontWeight: 900, color: g.color }}>{fmt(amt)}</div>
-              <div className="fs-11 text-muted mt-1">{pct}% of total</div>
-              <div style={{ background: 'var(--bg3)', borderRadius: 4, height: 4, overflow: 'hidden', marginTop: 8 }}>
-                <div style={{ height: '100%', width: `${pct}%`, background: g.color, borderRadius: 4 }} />
-              </div>
-              <div className="fs-10 text-muted mt-1">{g.categories.length} categories</div>
-            </div>
-          );
-        })}
-        {ungroupedTotal > 0 && (
-          <div onClick={() => setOthersExpanded(p => !p)} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: 14, borderLeft: '4px solid #94a3b8', cursor: 'pointer' }}>
-            <div style={{ fontSize: 22, marginBottom: 4 }}>📦</div>
-            <div className="fs-12 fw-700 text-muted mb-1">Others</div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: '#94a3b8' }}>{fmt(ungroupedTotal)}</div>
-            <div className="fs-11 text-muted mt-1">{total > 0 ? ((ungroupedTotal / total) * 100).toFixed(1) : 0}% of total</div>
-            <div style={{ marginTop: 8, fontSize: 11, color: '#94a3b8', fontWeight: 700 }}>{othersExpanded ? '▲ Collapse' : '▼ Expand'}</div>
-          </div>
-        )}
-      </div>
-
-      {/* Detailed breakdown per group */}
-      {groups.map(g => {
-        const groupItems = getGroupItems(g);
-        const groupTotal = getGroupTotal(g);
-        
-        if (groupTotal === 0) return null;
-        
-        const catMap = {};
-        groupItems.forEach(i => { catMap[i.category] = (catMap[i.category] || 0) + +i.amount; });
-        
-        return (
-          <div key={g.id} className="card" style={{ marginBottom: 12 }}>
-            <div className="flex justify-between items-center" style={{ cursor: 'pointer' }} onClick={() => setExpanded(p => ({ ...p, [g.id]: !p[g.id] }))}>
-              <div className="flex items-center gap-2">
-                <span style={{ fontSize: 20 }}>{g.icon}</span>
-                <div>
-                  <div className="fw-700 fs-14">{g.label}</div>
-                  <div className="fs-11 text-muted">{groupItems.length} transactions</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span style={{ fontWeight: 900, fontSize: 16, color: g.color }}>{fmt(groupTotal)}</span>
-                <span className="text-muted fs-12">{total > 0 ? ((groupTotal / total) * 100).toFixed(1) : 0}%</span>
-                <button onClick={e => { e.stopPropagation(); setGroupModal(g); }}
-                  style={{ background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 6, padding: '2px 7px', fontSize: 11, cursor: 'pointer', color: 'var(--t3)' }}>✏️</button>
-                <button onClick={e => { e.stopPropagation(); setDeleteGroup(g); }}
-                  style={{ background: 'rgba(244,63,94,.08)', border: '1px solid rgba(244,63,94,.2)', borderRadius: 6, padding: '2px 7px', fontSize: 11, cursor: 'pointer', color: 'var(--red)' }}>🗑️</button>
-                <span className="text-muted">{expanded[g.id] ? '▲' : '▼'}</span>
-              </div>
-            </div>
-            {expanded[g.id] && (
-              <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-                {Object.entries(catMap).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
-                  <div key={cat} className="flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-2">
-                      <div style={{ borderRadius: 4, height: 4, width: `${Math.max(8, (amt / groupTotal) * 80)}px`, maxWidth: 80, background: g.color, opacity: 0.6 }} />
-                      <span className="fs-13">{cat}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="amt fs-13">{fmt(amt)}</span>
-                      <span className="text-muted fs-11">{((amt / groupTotal) * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Others breakdown */}
-      {ungroupedTotal > 0 && othersExpanded && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="flex justify-between items-center" style={{ cursor: 'pointer' }} onClick={() => setOthersExpanded(false)}>
-            <div className="flex items-center gap-2">
-              <span style={{ fontSize: 20 }}>📦</span>
-              <div>
-                <div className="fw-700 fs-14">Others</div>
-                <div className="fs-11 text-muted">{ungroupedItems.length} transactions</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span style={{ fontWeight: 900, fontSize: 16, color: '#94a3b8' }}>{fmt(ungroupedTotal)}</span>
-              <span className="text-muted fs-12">{total > 0 ? ((ungroupedTotal / total) * 100).toFixed(1) : 0}%</span>
-              <span className="text-muted">▲</span>
-            </div>
-          </div>
-          <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-            {(() => {
-              const catMap = {};
-              ungroupedItems.forEach(i => { catMap[i.category || 'Uncategorised'] = (catMap[i.category || 'Uncategorised'] || 0) + +i.amount; });
-              return Object.entries(catMap).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
-                <div key={cat} className="flex justify-between items-center mb-2">
-                  <div className="flex items-center gap-2">
-                    <div style={{ borderRadius: 4, height: 4, width: `${Math.max(8, (amt / ungroupedTotal) * 80)}px`, maxWidth: 80, background: '#94a3b8', opacity: 0.6 }} />
-                    <span className="fs-13">{cat}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="amt fs-13">{fmt(amt)}</span>
-                    <span className="text-muted fs-11">{((amt / ungroupedTotal) * 100).toFixed(1)}%</span>
-                  </div>
-                </div>
-              ));
-            })()}
-          </div>
-        </div>
-      )}
-
-      {/* Add / Edit Group Modal */}
-      {groupModal && (
-        <Modal
-          title={groupModal === 'add' ? '➕ Add Group' : `✏️ Edit — ${groupModal.label}`}
-          onClose={() => setGroupModal(false)}>
-          <GroupForm
-            group={groupModal === 'add' ? null : groupModal}
-            allCats={cats}
-            onSave={saveGroup}
-            onClose={() => setGroupModal(false)} />
-        </Modal>
-      )}
-
-      {/* Delete Confirm */}
-      {deleteGroup && (
-        <div className="overlay" onClick={() => setDeleteGroup(null)}>
-          <div className="modal" style={{ maxWidth: 360, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 44, marginBottom: 14 }}>🗑️</div>
-            <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>Delete "{deleteGroup.label}"?</div>
-            <div className="text-muted fs-13 mb-5">This removes the group definition only. Your expense records are not affected.</div>
-            <div className="flex gap-3" style={{ justifyContent: 'center' }}>
-              <button className="btn btn-secondary" onClick={() => setDeleteGroup(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={confirmDelete} disabled={deleting}>
-                {deleting ? <span className="spin" /> : null} Delete Group
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 function DailySpendingTab({ items, showFixed }) {
   const [expandedDay, setExpandedDay] = useState(null);
 
@@ -1017,7 +562,59 @@ const getRDBreakdown = (item, asOf) => {
   return { periods, principal, interest: currentBalance - principal, currentBalance };
 };
 
-const BLANK_REC = { name: '', category: '', amount: '', frequency: 'monthly', nextDue: today(), paidVia: '', notes: '', isActive: true, autoRenew: false, matureDate: '', matureAmount: '', expectedSpendingAmount: '', expectedSpendingDate: '', type: 'general', interestRate: '', rdStartDate: today() };
+const BLANK_REC = { name: '', category: '', amount: '', frequency: 'monthly', nextDue: today(), paidVia: '', notes: '', isActive: true, autoRenew: false, matureDate: '', matureAmount: '', expectedSpendingAmount: '', expectedSpendingDate: '', type: 'general', interestRate: '', rdStartDate: today(), linkedInsuranceId: '' };
+
+// ─── Matured RD/FD Popup ─────────────────────────────────
+// Full-screen promo-card style popup (the "you've won a prize" pattern) —
+// pops up automatically when a Recurring item's maturity date is reached,
+// prompting the user to set the next cycle up rather than letting it sit
+// dormant. Shows one item at a time if several matured at once.
+function MaturedPopup({ items, onRenew, onDismiss, onClose }) {
+  const item = items[0];
+  if (!item) return null;
+  return (
+    <div className="modal-overlay" style={{ zIndex: 200 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        maxWidth: 340, width: '92%', borderRadius: 22, overflow: 'hidden',
+        background: 'linear-gradient(160deg, #f97316, #ea580c)', position: 'relative',
+        boxShadow: '0 20px 60px rgba(0,0,0,.4)', textAlign: 'center', padding: '30px 22px 24px',
+      }}>
+        <div style={{ fontSize: 46, marginBottom: 6 }}>🏆</div>
+        <div style={{ color: '#fff', fontWeight: 800, fontSize: 22, lineHeight: 1.25, marginBottom: 6 }}>
+          Your {item.name} has Matured!
+        </div>
+        <div style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, marginBottom: 18 }}>
+          {item.matureAmount ? `Maturity value: ${fmt(parseFloat(item.matureAmount))}` : `Matured on ${new Date(item.matureDate).toLocaleDateString('en-IN')}`}
+        </div>
+        <div style={{ background: '#fff', borderRadius: 16, padding: '16px 14px', marginBottom: 18 }}>
+          <div style={{ fontSize: 13, color: '#7c2d12', fontWeight: 700, marginBottom: 4 }}>{item.name}</div>
+          <div style={{ fontSize: 12, color: '#9a3412' }}>
+            {item.frequency} · {fmt(parseFloat(item.amount))} per cycle
+          </div>
+        </div>
+        <button onClick={() => onRenew(item)} style={{
+          width: '100%', padding: '13px', borderRadius: 30, border: 'none', background: '#fff', color: '#ea580c',
+          fontWeight: 800, fontSize: 15, cursor: 'pointer', marginBottom: 10,
+        }}>
+          🔄 Set It Up Again
+        </button>
+        <button onClick={() => onDismiss(item)} style={{
+          width: '100%', padding: '10px', borderRadius: 30, border: '1px solid rgba(255,255,255,.5)', background: 'transparent',
+          color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+        }}>
+          Not now
+        </button>
+        {items.length > 1 && (
+          <div style={{ color: 'rgba(255,255,255,.75)', fontSize: 11, marginTop: 10 }}>+{items.length - 1} more matured item{items.length > 2 ? 's' : ''} waiting</div>
+        )}
+        <button onClick={onClose} style={{
+          position: 'absolute', top: 10, right: 10, width: 30, height: 30, borderRadius: '50%',
+          border: 'none', background: 'rgba(0,0,0,.2)', color: '#fff', fontSize: 15, cursor: 'pointer', lineHeight: 1,
+        }}>✕</button>
+      </div>
+    </div>
+  );
+}
 
 function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
   const [items, setItems]   = useState([]);
@@ -1028,6 +625,9 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
   const [form, setForm]     = useState(BLANK_REC);
   const [adding, setAdding] = useState(false);
   const [rdSummaryOpen, setRdSummaryOpen] = useState(true);
+  const [showMaturedPopup, setShowMaturedPopup] = useState(false);
+  const [maturedDismissedIds, setMaturedDismissedIds] = useState(new Set()); // dismissed this session, without writing to DB
+  const [insurancePolicies, setInsurancePolicies] = useState([]); // for the "link to insurance policy" sync feature
 
   // Date-only (no time-of-day) comparisons — avoids the local-time vs UTC-midnight
   // mismatch that was causing "today"/overdue items to sometimes miss the red highlight.
@@ -1053,18 +653,39 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
   const load = async () => {
     setLoading(true);
     try {
-      const data = await recurringService.getAll();
+      const [data, policies] = await Promise.all([recurringService.getAll(), insuranceService.getAll().catch(() => [])]);
       setItems(data);
-      await autoRenewOverdue(data);
+      setInsurancePolicies(policies);
+      await autoRenewOverdue(data, policies);
     }
     catch { toast.error('Failed to load'); }
     finally { setLoading(false); }
   };
 
+  // Advances a linked insurance policy's due date by its own payment
+  // frequency (Monthly/Quarterly/Half Yearly/Yearly) — called whenever a
+  // Recurring payment for that policy is recorded, so the Insurance page's
+  // "Due Soon" status clears in sync instead of needing a separate update.
+  // Takes the policies list as a parameter (rather than reading the
+  // `insurancePolicies` state) so it works correctly even when called
+  // immediately after a fetch, before that state update has applied.
+  const INSURANCE_FREQ_DAYS = { Monthly: 30, Quarterly: 91, 'Half Yearly': 182, Yearly: 365 };
+  const syncLinkedInsurance = async (linkedInsuranceId, policiesList) => {
+    if (!linkedInsuranceId) return;
+    const policy = (policiesList || insurancePolicies).find(p => p.id === linkedInsuranceId);
+    if (!policy) return;
+    try {
+      const days = INSURANCE_FREQ_DAYS[policy.paymentFrequency] || 365;
+      const newDue = new Date(policy.dueDate);
+      newDue.setDate(newDue.getDate() + days);
+      await insuranceService.update(policy.id, { ...policy, dueDate: newDue.toISOString().split('T')[0] });
+    } catch { /* insurance sync is a best-effort convenience — the recurring payment itself already succeeded */ }
+  };
+
   // Auto-advance any item with "Auto-renew" enabled whose due date has passed —
   // records the payment and rolls nextDue forward without needing a manual "Pay" click.
   // Catches up multiple missed cycles if the app wasn't opened for a while.
-  const autoRenewOverdue = async (list) => {
+  const autoRenewOverdue = async (list, policiesList) => {
     const due = list.filter(i => i.isActive && i.autoRenew && parseDateOnly(i.nextDue) && parseDateOnly(i.nextDue) < now);
     if (due.length === 0) return;
     let renewedCount = 0;
@@ -1083,6 +704,7 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
             paidVia: current.paidVia || '',
             notes: `[Recurring · Auto-renewed] ${current.name}`,
           });
+          if (current.linkedInsuranceId) await syncLinkedInsurance(current.linkedInsuranceId, policiesList);
         } catch { /* keep going even if one cycle's expense log fails */ }
         current = { ...current, nextDue: nextDue.toISOString().split('T')[0], lastPaid: current.nextDue };
         guard++;
@@ -1142,6 +764,7 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
       });
       // Advance next due
       await recurringService.update(item.id, { ...item, nextDue: nextDue.toISOString().split('T')[0], lastPaid: today() });
+      if (item.linkedInsuranceId) await syncLinkedInsurance(item.linkedInsuranceId);
       toast.success(`Payment recorded! Next due: ${nextDue.toLocaleDateString('en-IN')}`);
       load();
       if (onPaymentRecorded) onPaymentRecorded();
@@ -1174,6 +797,43 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
   const activeItems   = items.filter(i => i.isActive);
   const inactiveItems = items.filter(i => !i.isActive);
   const displayItems  = showFixed ? activeItems : activeItems.filter(i => !isFixedCat || !isFixedCat(i.category));
+
+  // Items whose maturity date has been reached (or passed) and haven't been
+  // acknowledged yet — these trigger the "matured, set up again?" popup,
+  // the same way an app promo pops up when a condition is met.
+  const maturedItems = activeItems.filter(i =>
+    i.matureDate && parseDateOnly(i.matureDate) && parseDateOnly(i.matureDate) <= now &&
+    !i.matureAcknowledged && !maturedDismissedIds.has(i.id)
+  );
+  useEffect(() => {
+    if (maturedItems.length > 0) setShowMaturedPopup(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items.length]);
+
+  const dismissMatured = async (item) => {
+    setMaturedDismissedIds(prev => new Set(prev).add(item.id));
+    try { await recurringService.update(item.id, { ...item, matureAcknowledged: true }); } catch { /* stays dismissed for this session even if the write fails */ }
+  };
+
+  // "Set up again" — closes out the matured cycle and opens the Add form
+  // pre-filled with a fresh cycle (same name/amount/frequency/paidVia),
+  // starting today, with maturity fields cleared for the new term.
+  const renewMatured = async (item) => {
+    try { await recurringService.update(item.id, { ...item, matureAcknowledged: true, isActive: false }); } catch { /* proceed to open the form regardless */ }
+    setMaturedDismissedIds(prev => new Set(prev).add(item.id));
+    setShowMaturedPopup(false);
+    setEdit(null);
+    setForm({
+      ...BLANK_REC,
+      name: item.name, category: item.category, amount: item.amount,
+      frequency: item.frequency, paidVia: item.paidVia, type: item.type,
+      interestRate: item.interestRate, linkedInsuranceId: item.linkedInsuranceId || '',
+      nextDue: today(), rdStartDate: today(),
+    });
+    setModal(true);
+    load();
+  };
+
   const monthlyTotal = activeItems.reduce((s, i) => {
     const freq = FREQ_OPTIONS.find(f => f.key === i.frequency);
     const perMonth = freq ? (parseFloat(i.amount) * 30) / freq.days : parseFloat(i.amount);
@@ -1575,6 +1235,18 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
             </div>
           </div>
 
+          <div className="fs-12 fw-700 text-muted mt-2 mb-1">🔗 Sync with Insurance (optional)</div>
+          <div className="frow">
+            <div className="fg" style={{ flex: 1 }}>
+              <label className="fl">Link to Insurance Policy</label>
+              <select className="fs" name="linkedInsuranceId" value={form.linkedInsuranceId} onChange={ch}>
+                <option value="">— None —</option>
+                {insurancePolicies.map(p => <option key={p.id} value={p.id}>{p.name} ({p.company})</option>)}
+              </select>
+              {form.linkedInsuranceId && <div className="fs-11 text-muted mt-1">Recording a payment here will also push that policy's due date forward on the Insurance page — no need to update both places.</div>}
+            </div>
+          </div>
+
           <div className="fg"><label className="fl">Notes (optional)</label>
             <input className="fi" name="notes" value={form.notes} onChange={ch} placeholder="e.g. HDFC credit card auto-pay" />
           </div>
@@ -1592,151 +1264,19 @@ function RecurringTab({ cats, showFixed, isFixedCat, onPaymentRecorded }) {
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
-    </div>
-  );
-}
-
-// ─── Category Detail Tab ───────────────────────────────────
-function CategoryDetailTab({ cats }) {
-  const now = new Date();
-  const [selCat, setSelCat]       = useState('');
-  const [selYear, setSelYear]     = useState(now.getFullYear());
-  const [records, setRecords]     = useState([]);
-  const [loading, setLoading]     = useState(false);
-  const [showNotes, setShowNotes] = useState(true);
-  const [sortField, setSortField] = useState('date');
-  const [sortDir, setSortDir]     = useState('desc');
-  const [search, setSearch]       = useState('');
-  const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
-  const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  useEffect(() => {
-    if (!selCat) return;
-    setLoading(true);
-    expenseService.getAll({ year: selYear, category: selCat })
-      .then(data => setRecords(data))
-      .catch(() => toast.error('Failed to load'))
-      .finally(() => setLoading(false));
-  }, [selCat, selYear]);
-
-  const sorted = [...records]
-    .filter(r => !search || (r.notes||'').toLowerCase().includes(search.toLowerCase()) || (r.paidVia||'').toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => {
-      const va = sortField==='amount' ? +a.amount : new Date(a.date).getTime();
-      const vb = sortField==='amount' ? +b.amount : new Date(b.date).getTime();
-      return sortDir==='asc' ? va-vb : vb-va;
-    });
-
-  const total = sorted.reduce((s,r) => s + +r.amount, 0);
-  const avgAmt = sorted.length > 0 ? total / sorted.length : 0;
-  const monthMap = {};
-  sorted.forEach(r => { const m = new Date(r.date).getMonth(); monthMap[m] = (monthMap[m]||0) + +r.amount; });
-
-  const SH = ({ field, label }) => (
-    <span onClick={() => { if(sortField===field) setSortDir(d=>d==='asc'?'desc':'asc'); else { setSortField(field); setSortDir('desc'); } }}
-      style={{ cursor:'pointer', userSelect:'none' }}>
-      {label} {sortField===field ? (sortDir==='asc'?'↑':'↓') : <span style={{color:'var(--t3)',fontSize:10}}>↕</span>}
-    </span>
-  );
-
-  return (
-    <div>
-      {/* Controls */}
-      <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:16 }}>
-        <select className="fs" value={selCat} onChange={e => setSelCat(e.target.value)} style={{ minWidth:200 }}>
-          <option value="">— Choose a Category —</option>
-          {cats.filter(c=>c.isFavorite).length > 0 && (
-            <optgroup label="⭐ Favourites">
-              {cats.filter(c=>c.isFavorite).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-            </optgroup>
-          )}
-          <optgroup label="All Categories">
-            {cats.filter(c=>!c.isFavorite).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-          </optgroup>
-        </select>
-        <select className="fs btn-sm" value={selYear} onChange={e => setSelYear(+e.target.value)}>
-          {years.map(y => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <label className="flex items-center gap-2 fs-13" style={{ cursor:'pointer', userSelect:'none' }}>
-          <input type="checkbox" checked={showNotes} onChange={e => setShowNotes(e.target.checked)} style={{ accentColor:'var(--blue)' }} />
-          Show Notes column
-        </label>
-      </div>
-
-      {!selCat ? (
-        <div className="card"><div className="empty"><div className="empty-icon">🔎</div><div className="empty-title">Choose a category</div><div className="empty-sub">Select a category and year to see all records</div></div></div>
-      ) : loading ? (
-        <div className="spin-center"><div className="spin spin-lg" /></div>
-      ) : (
-        <>
-          {/* Summary stats */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:10, marginBottom:14 }}>
-            {[
-              { icon:'📋', label:'Total Records',  val: records.length,               c:'var(--blue)' },
-              { icon:'💸', label:'Total Spent',     val: fmt(total),                   c:'var(--red)' },
-              { icon:'📊', label:'Avg per Entry',   val: fmt(avgAmt),                  c:'var(--orange)' },
-              { icon:'📅', label:'Active Months',   val: Object.keys(monthMap).length, c:'var(--purple)' },
-            ].map((s,i) => (
-              <div key={i} style={{ background:'var(--bg2)', border:'1px solid var(--border)', borderRadius:10, padding:'10px 14px', borderLeft:`3px solid ${s.c}` }}>
-                <div style={{ fontSize:11, color:'var(--t3)', marginBottom:2 }}>{s.icon} {s.label}</div>
-                <div style={{ fontSize:15, fontWeight:900, color:s.c }}>{s.val}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Monthly breakdown chips */}
-          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:14 }}>
-            {MONTHS_SHORT.map((m, i) => monthMap[i] ? (
-              <div key={i} style={{ background:'var(--bg2)', border:'1px solid var(--border)', borderRadius:8, padding:'5px 12px', fontSize:12 }}>
-                <span className="fw-700">{m}</span> <span className="amt-r fw-700">{fmt(monthMap[i])}</span>
-                <span className="text-muted" style={{ fontSize:10, marginLeft:4 }}>{records.length > 0 ? ((monthMap[i]/total)*100).toFixed(0) : 0}%</span>
-              </div>
-            ) : null)}
-          </div>
-
-          {/* Note / paid-via search filter */}
-          <div style={{ display:'flex', alignItems:'center', gap:8, background:'var(--bg2)', border:'1px solid var(--border2)', borderRadius:8, padding:'7px 12px', marginBottom:12 }}>
-            <span style={{ fontSize:13 }}>🔍</span>
-            <input style={{ background:'none', border:'none', outline:'none', color:'var(--text)', fontSize:13, flex:1 }}
-              placeholder="Filter by notes or paid via..."
-              value={search} onChange={e => setSearch(e.target.value)} />
-            {search && <button onClick={() => setSearch('')} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12 }}>✕</button>}
-          </div>
-
-          {sorted.length === 0 ? (
-            <div className="card"><div className="empty"><div className="empty-icon">🔎</div><div className="empty-title">No matching records</div></div></div>
-          ) : (
-            <div className="tbl-wrap"><table className="tbl">
-              <thead><tr>
-                <th><SH field="date" label="Date" /></th>
-                <th style={{ textAlign:'right' }}><SH field="amount" label="Amount" /></th>
-                <th>Paid Via</th>
-                {showNotes && <th>Notes</th>}
-              </tr></thead>
-              <tbody>
-                {sorted.map(r => (
-                  <tr key={r.id}>
-                    <td className="font-mono fs-12 text-muted">{fmtDate(r.date)}</td>
-                    <td style={{ textAlign:'right' }}><span className="amt amt-r fw-700">{fmt(r.amount)}</span></td>
-                    <td><span style={{ background:'var(--bg3)', border:'1px solid var(--border)', borderRadius:6, padding:'3px 8px', fontSize:12, fontWeight:700, color:'var(--blue)' }}>{r.paidVia || '—'}</span></td>
-                    {showNotes && <td className="text-muted fs-12">{r.notes || '—'}</td>}
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot><tr>
-                <td className="text-muted fs-12" style={{ padding:'10px 14px' }}>TOTAL ({sorted.length} records)</td>
-                <td style={{ textAlign:'right', padding:'10px 14px' }}><span className="amt amt-r fw-800">{fmt(total)}</span></td>
-                <td colSpan={showNotes ? 2 : 1} />
-              </tr></tfoot>
-            </table></div>
-          )}
-        </>
+      {showMaturedPopup && maturedItems.length > 0 && (
+        <MaturedPopup
+          items={maturedItems}
+          onRenew={renewMatured}
+          onDismiss={(item) => { dismissMatured(item); if (maturedItems.length <= 1) setShowMaturedPopup(false); }}
+          onClose={() => setShowMaturedPopup(false)}
+        />
       )}
     </div>
   );
 }
 
-// ─── Paid Via Tab ──────────────────────────────────────────
+// ─── Category Detail Tab ───────────────────────────────────
 function PaidViaTab({ items, showFixed, isFixedCat }) {
   const filtered = showFixed ? items : items.filter(i => !isFixedCat(i.category));
   const total = filtered.reduce((s, i) => s + +i.amount, 0);
@@ -1990,17 +1530,13 @@ function PaidViaTab({ items, showFixed, isFixedCat }) {
 // Firestore collection: 'mrpprices'
 // Doc shape: { userId, category, itemName, mrp, unit, date, notes, createdAt, updatedAt }
 
-const MRP_CATEGORIES = [
-  { key: 'Grocery',           label: '🛒 Grocery',            color: '#4d9eff' },
-  { key: 'Vegetable',         label: '🥦 Vegetable',          color: '#22c55e' },
-  { key: 'Fruit',             label: '🍎 Fruit',              color: '#e879f9' },
-  { key: 'House Basic Needs', label: '🏠 House Basic Needs',  color: '#f97316' },
-];
-
 const MRP_UNITS = ['KG', 'g', '500g', '250g', 'Litre', 'ml', 'Piece', 'Pack', 'Dozen'];
 
-function mrpCategoryColor(cat) {
-  return MRP_CATEGORIES.find(c => c.key === cat)?.color || '#a78bfa';
+// Looks up a category's color from the Settings-managed category list
+// (falls back to a neutral purple for categories with no color set, e.g.
+// free-text categories that don't match any Settings entry).
+function mrpCategoryColor(cat, cats) {
+  return cats.find(c => c.name === cat)?.color || '#a78bfa';
 }
 
 // Accepts "17/06/2026", "17-06-2026", or already-ISO "2026-06-17"
@@ -2014,9 +1550,9 @@ function mrpParseDate(raw) {
 }
 
 // ─── Entry Form (Add / Edit) ───────────────────────────────
-function MrpEntryForm({ item, onSave, onClose }) {
+function MrpEntryForm({ item, cats, onSave, onClose }) {
   const [f, setF] = useState({
-    category: item?.category || MRP_CATEGORIES[0].key,
+    category: item?.category || cats.find(c => c.isFavorite)?.name || cats[0]?.name || 'Grocery',
     itemName: item?.itemName || '',
     mrp: item?.mrp != null ? String(item.mrp) : '',
     unit: item?.unit || 'KG',
@@ -2044,21 +1580,9 @@ function MrpEntryForm({ item, onSave, onClose }) {
 
   return (
     <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div>
+      <div className="fg">
         <label className="fl">Category</label>
-        <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
-          {MRP_CATEGORIES.map(c => (
-            <button key={c.key} type="button" onClick={() => setF(p => ({ ...p, category: c.key }))}
-              style={{
-                padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                border: `2px solid ${f.category === c.key ? c.color : 'var(--border2)'}`,
-                background: f.category === c.key ? `${c.color}20` : 'var(--bg3)',
-                color: f.category === c.key ? c.color : 'var(--t3)',
-              }}>
-              {c.label}
-            </button>
-          ))}
-        </div>
+        <CategoryDropdown cats={cats} value={f.category} onChange={val => setF(p => ({ ...p, category: val }))} />
       </div>
 
       <div className="fg">
@@ -2099,9 +1623,805 @@ function MrpEntryForm({ item, onSave, onClose }) {
   );
 }
 
+// ─── Paid Via Picker (bank/card aware) ──────────────────────
+// Self-contained version of the picker used in the main Expense form —
+// used here so a whole scanned bill can be tagged with one payment method.
+function PaidViaPicker({ value, onChange }) {
+  const [bankPaidVia, setBankPaidVia] = useState([]);
+  const [cardPaidVia, setCardPaidVia] = useState([]);
+  const STATIC_PAID_VIA = ['Paytm', 'Cash', 'Cash Wallet', '💵 Meal Card', 'UTS Wallet', 'Amazon Wallet'];
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid; if (!uid) return;
+    getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', uid)))
+      .then(snap => {
+        const names = snap.docs.map(d => d.data().name).filter(Boolean).sort();
+        setBankPaidVia(names);
+        if (!value && names.length > 0) onChange(names[0]);
+      })
+      .catch(() => {});
+    getDocs(query(collection(db, 'cards'), where('userId', '==', uid)))
+      .then(snap => {
+        const labels = snap.docs.map(d => d.data()).filter(c => c.isActive !== false)
+          .map(c => c.last4 ? `${c.name} (****${c.last4})` : c.name).sort();
+        setCardPaidVia(labels);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const allPaidVia = [
+    ...bankPaidVia,
+    ...cardPaidVia.filter(c => !bankPaidVia.includes(c)),
+    ...STATIC_PAID_VIA.filter(s => !bankPaidVia.includes(s) && !cardPaidVia.includes(s)),
+  ];
+
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {allPaidVia.map(p => {
+        const isBank = bankPaidVia.includes(p);
+        const isCard = cardPaidVia.includes(p);
+        return (
+          <button key={p} type="button" onClick={() => onChange(p)}
+            style={{
+              padding: '6px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+              border: `2px solid ${value === p ? (isBank ? 'var(--blue)' : isCard ? '#7c3aed' : 'var(--border2)') : 'var(--border2)'}`,
+              background: value === p ? (isBank ? 'rgba(77,158,255,.12)' : isCard ? 'rgba(124,58,237,.1)' : 'rgba(148,163,184,.1)') : 'var(--bg3)',
+              color: value === p ? (isBank ? 'var(--blue)' : isCard ? '#7c3aed' : 'var(--text)') : 'var(--t3)',
+            }}>
+            {isBank && '🏦 '}{isCard && !isBank && '💳 '}{p}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Bill Scan Review Modal ─────────────────────────────────
+// Lets the user check/uncheck, rename, re-categorize, re-date, and correct
+// the rate/amount for each item the model extracted, before anything is
+// saved. Shows a live category-wise total at the bottom — that total is
+// what gets written to the Expenses List tab on confirm.
+function ScanReviewModal({ rows, setRows, cats, paidVia, setPaidVia, onConfirm, onClose, saving }) {
+  const updateRow = (key, field, value) => {
+    setRows(prev => prev.map(r => (r._key === key ? { ...r, [field]: value } : r)));
+  };
+  const toggleAll = () => {
+    const allIn = rows.every(r => r._included);
+    setRows(prev => prev.map(r => ({ ...r, _included: !allIn })));
+  };
+  const includedRows = rows.filter(r => r._included);
+  const includedCount = includedRows.length;
+
+  // Live category-wise totals from the currently-included rows — this is
+  // exactly what will land on the List tab (grouped by date + category)
+  // when the user hits Save.
+  const categoryTotals = {};
+  includedRows.forEach(r => {
+    const cat = r.Type || 'Uncategorized';
+    const amt = parseFloat(r.Amount ?? r.MRPOrRate) || 0;
+    categoryTotals[cat] = (categoryTotals[cat] || 0) + amt;
+  });
+  const grandTotal = Object.values(categoryTotals).reduce((s, v) => s + v, 0);
+
+  return (
+    <Modal title="📷 Review Scanned Bill" onClose={onClose}>
+      <div style={{ padding: '0 20px 4px', fontSize: 12, color: 'var(--t3)' }}>
+        Check the items, fix anything the scan got wrong, then save. Rate is used for price tracking; Amount is the line total (what's added to your Expenses list, grouped by date &amp; category).
+      </div>
+      <div className="tbl-wrap" style={{ margin: '10px 20px', maxHeight: 340, overflowY: 'auto' }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 32 }}><input type="checkbox" checked={rows.length > 0 && rows.every(r => r._included)} onChange={toggleAll} /></th>
+              <th>Date</th>
+              <th>Name</th>
+              <th>Category</th>
+              <th>Unit</th>
+              <th style={{ textAlign: 'right' }}>Rate (₹)</th>
+              <th style={{ textAlign: 'right' }}>Amount (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r._key} style={{ opacity: r._included ? 1 : 0.45 }}>
+                <td><input type="checkbox" checked={r._included} onChange={e => updateRow(r._key, '_included', e.target.checked)} /></td>
+                <td>
+                  <input className="fi" type="date" style={{ padding: '5px 6px', fontSize: 12, minWidth: 128 }}
+                    value={r.Date} onChange={e => updateRow(r._key, 'Date', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" style={{ padding: '5px 8px', fontSize: 12, minWidth: 110 }}
+                    value={r.Name} onChange={e => updateRow(r._key, 'Name', e.target.value)} />
+                </td>
+                <td>
+                  <select className="fs" style={{ padding: '5px 8px', fontSize: 12 }}
+                    value={r.Type} onChange={e => updateRow(r._key, 'Type', e.target.value)}>
+                    {cats.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select className="fs" style={{ padding: '5px 8px', fontSize: 12 }}
+                    value={r.Qty} onChange={e => updateRow(r._key, 'Qty', e.target.value)}>
+                    {MRP_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <input className="fi" type="number" style={{ padding: '5px 8px', fontSize: 12, textAlign: 'right', width: 80 }}
+                    value={r.MRPOrRate} onChange={e => updateRow(r._key, 'MRPOrRate', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" type="number" style={{ padding: '5px 8px', fontSize: 12, textAlign: 'right', width: 80 }}
+                    value={r.Amount} onChange={e => updateRow(r._key, 'Amount', e.target.value)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Category-wise sum — this is what gets added to the List tab, per date+category */}
+      <div style={{ margin: '0 20px 12px', padding: '10px 12px', background: 'var(--bg3)', borderRadius: 10 }}>
+        <div className="fs-11 fw-700 text-muted mb-2" style={{ textTransform: 'uppercase', letterSpacing: '.04em' }}>Category Totals (→ List tab)</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {Object.entries(categoryTotals).map(([cat, amt]) => (
+            <div key={cat} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+              <span style={{ color: mrpCategoryColor(cat, cats), fontWeight: 700 }}>{cat}</span>
+              <span className="font-mono fw-700">{fmt(amt)}</span>
+            </div>
+          ))}
+          {Object.keys(categoryTotals).length === 0 && <div className="fs-12 text-muted">No items selected</div>}
+        </div>
+        {Object.keys(categoryTotals).length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 800, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border2)' }}>
+            <span>Total</span>
+            <span className="font-mono">{fmt(grandTotal)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Paid via — applies to all the Expense entries this scan creates */}
+      <div style={{ margin: '0 20px 12px' }}>
+        <label className="fl">Paid Via <span className="text-muted" style={{ fontWeight: 400, textTransform: 'none' }}>(applies to the whole bill)</span></label>
+        <PaidViaPicker value={paidVia} onChange={setPaidVia} />
+      </div>
+
+      <div className="modal-foot" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="fs-12 text-muted">{includedCount} of {rows.length} selected</span>
+        <div className="flex gap-2">
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={onConfirm} disabled={saving || includedCount === 0}>
+            {saving ? <span className="spin" /> : null} Save {includedCount} Item{includedCount === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Main MRP Prices Tab ────────────────────────────────────
-function MrpPricesTab() {
+// ─── Paytm CSV Review Modal ─────────────────────────────────
+// Same shape as the bill-scanner's review popup: check/uncheck, edit
+// category per row, delete selected rows, then save. Also carries the
+// Bank/Cash "expense type" selector for the whole batch.
+// ─── Dividend Candidates (from a bank statement's credit rows) ─────
+// Bank statements aren't just expenses — a NACH credit that looks like a
+// stock dividend (matched via narration pattern) is offered here instead
+// of being silently dropped, writing straight into the same 'dividends'
+// collection the Portfolio → Dividends tab reads from.
+function DividendCandidatesModal({ rows, setRows, stocks, onConfirm, onClose, saving }) {
+  const updateRow = (key, field, value) => setRows(prev => prev.map(r => (r._key === key ? { ...r, [field]: value } : r)));
+  const includedRows = rows.filter(r => r._included);
+
+  return (
+    <Modal title="💰 Possible Dividend Credits Found" onClose={onClose}>
+      <div style={{ padding: '0 20px 4px', fontSize: 12, color: 'var(--t3)' }}>
+        These credits look like they could be stock dividends rather than regular income — confirm the stock symbol for each one (a rough guess is pre-filled from the narration where possible) and they'll be added to your Portfolio → Dividends tab. Uncheck anything that isn't actually a dividend.
+      </div>
+
+      <div className="tbl-wrap" style={{ margin: '10px 20px', maxHeight: 320, overflowY: 'auto' }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 32 }}></th>
+              <th>Date</th>
+              <th>Stock Symbol</th>
+              <th style={{ textAlign: 'right' }}>Amount (₹)</th>
+              <th>Shares <span className="text-muted" style={{ fontWeight: 400 }}>(optional)</span></th>
+              <th>Narration</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r._key} style={{ opacity: r._included ? 1 : 0.4 }}>
+                <td><input type="checkbox" checked={r._included} onChange={e => updateRow(r._key, '_included', e.target.checked)} /></td>
+                <td>
+                  <input className="fi" type="date" style={{ padding: '5px 6px', fontSize: 12, minWidth: 120 }}
+                    value={r.date} onChange={e => updateRow(r._key, 'date', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" list={`div-stock-${r._key}`} style={{ padding: '5px 8px', fontSize: 12, minWidth: 110 }}
+                    value={r.symbol} onChange={e => updateRow(r._key, 'symbol', e.target.value)} placeholder="e.g. FEDERALBNK" />
+                  <datalist id={`div-stock-${r._key}`}>
+                    {stocks.map(s => <option key={s.id} value={s.symbol}>{s.name}</option>)}
+                  </datalist>
+                </td>
+                <td>
+                  <input className="fi" type="number" style={{ padding: '5px 8px', fontSize: 12, textAlign: 'right', width: 90 }}
+                    value={r.amount} onChange={e => updateRow(r._key, 'amount', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" type="number" style={{ padding: '5px 8px', fontSize: 12, width: 80 }}
+                    value={r.shares} onChange={e => updateRow(r._key, 'shares', e.target.value)} placeholder="—" />
+                </td>
+                <td className="fs-11 text-muted" title={r.description} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.description}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="modal-foot" style={{ justifyContent: 'space-between' }}>
+        <span className="fs-12 text-muted">{includedRows.length} of {rows.length} will be added to Dividends</span>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Skip</button>
+          <button className="btn btn-primary" onClick={onConfirm} disabled={saving || includedRows.length === 0}>
+            {saving ? <span className="spin" /> : null} Add {includedRows.length} to Dividends
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function PaytmReviewModal({ rows, setRows, cats, paidVia, setPaidVia, onCategoryAdded, onConfirm, onClose, saving }) {
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const updateRow = (key, field, value) => setRows(prev => prev.map(r => (r._key === key ? { ...r, [field]: value } : r)));
+  const toggleAll = () => {
+    const allIn = rows.every(r => r._included);
+    setRows(prev => prev.map(r => ({ ...r, _included: !allIn })));
+  };
+  const deleteSelected = () => setRows(prev => prev.filter(r => !r._included));
+  const includedRows = rows.filter(r => r._included);
+  const total = includedRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+
+  return (
+    <Modal title="📥 Review Statement Transactions" onClose={onClose}>
+      <div style={{ padding: '0 20px 4px', fontSize: 12, color: 'var(--t3)' }}>
+        Check the transactions to import, fix any category the AI got wrong, or select rows and delete them if they shouldn't be here at all (refunds, failed payments, etc.). Read the full description if a category looks off — that's exactly what the AI based its guess on.
+      </div>
+
+      <div style={{ margin: '10px 20px' }}>
+        <label className="fl">Paid Via <span className="text-muted" style={{ fontWeight: 400, textTransform: 'none' }}>(applies to all selected transactions)</span></label>
+        <PaidViaPicker value={paidVia} onChange={setPaidVia} />
+      </div>
+
+      <div className="flex items-center justify-between" style={{ margin: '0 20px 8px', flexWrap: 'wrap', gap: 8 }}>
+        <button className="btn btn-secondary btn-sm" onClick={deleteSelected} disabled={includedRows.length === 0}>🗑️ Delete Selected ({includedRows.length})</button>
+        <div className="flex items-center gap-2">
+          <span className="fs-12 text-muted">{includedRows.length} of {rows.length} selected · Total {fmt(total)}</span>
+          <button className="btn btn-primary btn-sm" onClick={() => setShowAddCategory(true)}>+ Add Category</button>
+        </div>
+      </div>
+      {showAddCategory && (
+        <AddCategoryModal onClose={() => setShowAddCategory(false)} onAdded={(newCat) => { setShowAddCategory(false); onCategoryAdded?.(newCat); }} />
+      )}
+
+      <div className="tbl-wrap" style={{ margin: '0 20px 10px', maxHeight: 340, overflowY: 'auto' }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ width: 32 }}><input type="checkbox" checked={rows.length > 0 && rows.every(r => r._included)} onChange={toggleAll} /></th>
+              <th>Date</th>
+              <th>Description</th>
+              <th style={{ textAlign: 'right' }}>Amount (₹)</th>
+              <th>Category</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r._key} style={{ opacity: r._included ? 1 : 0.4 }}>
+                <td><input type="checkbox" checked={r._included} onChange={e => updateRow(r._key, '_included', e.target.checked)} /></td>
+                <td>
+                  <input className="fi" type="date" style={{ padding: '5px 6px', fontSize: 12, minWidth: 120 }}
+                    value={r.date} onChange={e => updateRow(r._key, 'date', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" style={{ padding: '5px 8px', fontSize: 12, minWidth: 220 }} title={r.description}
+                    value={r.description} onChange={e => updateRow(r._key, 'description', e.target.value)} />
+                </td>
+                <td>
+                  <input className="fi" type="number" style={{ padding: '5px 8px', fontSize: 12, textAlign: 'right', width: 90 }}
+                    value={r.amount} onChange={e => updateRow(r._key, 'amount', e.target.value)} />
+                </td>
+                <td>
+                  <select className="fs" style={{ padding: '5px 8px', fontSize: 12 }}
+                    value={r.category} onChange={e => updateRow(r._key, 'category', e.target.value)}>
+                    {cats.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                    {!cats.some(c => c.name === r.category) && r.category && <option value={r.category}>{r.category}</option>}
+                  </select>
+                  {r.aiSuggested && r.aiSuggested === r.category && (
+                    <div className="fs-10 text-muted" style={{ marginTop: 2 }}>{r.fromTag ? '📌 From Paytm\'s own tag' : '💡 AI suggested'}</div>
+                  )}
+                  {r.aiSuggested && r.aiSuggested !== r.category && (
+                    <div className="fs-10 text-muted" style={{ marginTop: 2 }}>{r.fromTag ? '📌 Paytm tagged' : '💡 AI suggested'}: {r.aiSuggested}</div>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No transactions left — everything was deleted</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="modal-foot" style={{ justifyContent: 'space-between' }}>
+        <span className="fs-12 text-muted">{includedRows.length} transaction{includedRows.length === 1 ? '' : 's'} will be saved</span>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={onConfirm} disabled={saving || includedRows.length === 0}>
+            {saving ? <span className="spin" /> : null} Save {includedRows.length}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const STATEMENT_SOURCES = [
+  { key: 'paytm', label: '🅿️ Paytm', bank: '' },
+  { key: 'idfc', label: '🏦 IDFC First Bank', bank: 'IDFC First Bank' },
+  { key: 'hdfc', label: '🏦 HDFC Bank', bank: 'HDFC Bank' },
+  { key: 'icici', label: '🏦 ICICI Bank', bank: 'ICICI Bank' },
+];
+
+function PaytmTab({ cats, onExpensesChanged }) {
+  const [source, setSource] = useState('paytm');
+  const [processing, setProcessing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [reviewRows, setReviewRows] = useState(null); // null until a file has been processed
+  const [paidVia, setPaidVia] = useState('');
+  const [localCats, setLocalCats] = useState([]); // categories added mid-review, before the next full reload picks them up from Settings
+  const effectiveCats = [...cats, ...localCats.filter(lc => !cats.some(c => c.name === lc.name))];
+  const [dividendCandidates, setDividendCandidates] = useState(null); // possible dividend credits found in a bank statement, or null
+  const [pendingExpenseRows, setPendingExpenseRows] = useState(null); // holds expense rows while the dividend modal is up first
+  const [stocks, setStocks] = useState([]); // for the dividend quick-add symbol picker
+  const fileRef = useRef(null);
+  const scanUrl = localStorage.getItem('fintrack_scan_gas_url') || ''; // same Apps Script deployment used by the bill scanner
+
+  // Paytm's "Download Statement" export is an actual Excel file — despite
+  // sometimes carrying a .csv-looking name — with a "Passbook Payment
+  // History" sheet holding the real transactions (a "Summary" sheet with
+  // just totals sits alongside it, and is ignored here).
+  const findTransactionSheet = (workbook) => {
+    if (workbook.Sheets['Passbook Payment History']) return workbook.Sheets['Passbook Payment History'];
+    // Fallback for a differently-named sheet: pick whichever sheet's first
+    // row looks like transaction headers, rather than assuming a fixed name.
+    for (const name of workbook.SheetNames) {
+      const sheet = workbook.Sheets[name];
+      const firstRow = XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0, blankrows: false })[0] || [];
+      const headerText = firstRow.join(' ').toLowerCase();
+      if (headerText.includes('date') && (headerText.includes('amount') || headerText.includes('transaction'))) return sheet;
+    }
+    return workbook.Sheets[workbook.SheetNames[0]];
+  };
+
+  // Bank statement exports (IDFC/HDFC/ICICI and most Indian banks) usually
+  // have several metadata rows first — account holder name, address,
+  // statement period, branch — before the real transaction table begins.
+  // This scans for the row that actually looks like column headers,
+  // instead of assuming row 0 is the header the way Paytm's file is.
+  const findBankHeaderRowAndParse = (sheet) => {
+    const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false });
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(raw.length, 30); i++) {
+      const rowText = raw[i].join(' ').toLowerCase();
+      const hasDate = rowText.includes('date');
+      const hasDesc = rowText.includes('narration') || rowText.includes('description') || rowText.includes('particulars');
+      const hasAmount = rowText.includes('withdrawal') || rowText.includes('debit') || rowText.includes('deposit') || rowText.includes('credit') || rowText.includes('amount');
+      if (hasDate && hasDesc && hasAmount) { headerIdx = i; break; }
+    }
+    if (headerIdx === -1) return [];
+    const headers = raw[headerIdx].map(h => String(h).trim());
+    return raw.slice(headerIdx + 1).map(r => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = r[i] !== undefined ? r[i] : ''; });
+      return obj;
+    });
+  };
+
+  const pickField = (row, candidates) => {
+    for (const c of candidates) {
+      const key = Object.keys(row).find(k => k.trim().toLowerCase() === c.toLowerCase());
+      if (key && row[key] !== undefined && row[key] !== '') return row[key];
+    }
+    return '';
+  };
+
+  // Paytm's Amount column is a single signed value — "+1.00" for money in,
+  // "-232.00" for money out — which is a much more reliable debit/credit
+  // signal than guessing from a separate type column.
+  const parseSignedAmount = (raw) => {
+    const s = String(raw).trim();
+    const n = parseFloat(s.replace(/[₹,\s]/g, ''));
+    if (isNaN(n)) return { amount: 0, debit: false };
+    return { amount: Math.abs(n), debit: n < 0 || (s.startsWith('-')) };
+  };
+
+  const MONTH_NAMES = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  const parseDate = (raw) => {
+    if (!raw) return today();
+    const s = String(raw).trim();
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/); // DD/MM/YYYY — Paytm, most banks
+    if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2})$/); // DD/MM/YY — some bank exports
+    if (m) return `20${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    m = s.toLowerCase().match(/^(\d{1,2})[- ]([a-z]{3})[- ](\d{4})/); // "01-Aug-2026" / "01 Aug 2026"
+    if (m && MONTH_NAMES[m[2]]) return `${m[3]}-${MONTH_NAMES[m[2]]}-${String(m[1]).padStart(2, '0')}`;
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return today();
+  };
+
+  // Bank statements typically use either two separate columns (Withdrawal
+  // Amt / Deposit Amt — a value in one XOR the other) or a single signed
+  // Amount column with a Dr/Cr indicator elsewhere. This handles both.
+  const parseBankAmount = (row) => {
+    const withdrawal = pickField(row, ['Withdrawal Amt.', 'Withdrawal Amt', 'Withdrawal', 'Debit Amount', 'Debit']);
+    const deposit = pickField(row, ['Deposit Amt.', 'Deposit Amt', 'Deposit', 'Credit Amount', 'Credit']);
+    const wAmt = parseFloat(String(withdrawal).replace(/[₹,\s]/g, '')) || 0;
+    const dAmt = parseFloat(String(deposit).replace(/[₹,\s]/g, '')) || 0;
+    if (wAmt > 0) return { amount: wAmt, debit: true };
+    if (dAmt > 0) return { amount: dAmt, debit: false };
+    // Fall back to a single signed Amount column, same as Paytm's format
+    const single = pickField(row, ['Amount']);
+    const { amount, debit } = parseSignedAmount(single);
+    return { amount, debit };
+  };
+
+  // Paytm already tags many transactions itself (e.g. "#🛒 Groceries",
+  // "#🥘 Food", "#🧾 Bill Payments") — this strips the emoji/# and tries to
+  // match that tag straight to one of the user's real category names, so
+  // clearly-tagged transactions skip the AI call entirely (saves quota,
+  // and Paytm's own tag is often more reliable than a guess from raw text
+  // anyway). Only untagged/unmatched rows get sent to the AI.
+  const matchTagToCategory = (tag, categoryList) => {
+    if (!tag) return null;
+    const cleaned = tag.replace(/^#/, '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').trim().toLowerCase();
+    if (!cleaned) return null;
+    // Direct or substring match against the user's actual category names first
+    const exact = categoryList.find(c => c.name.toLowerCase() === cleaned);
+    if (exact) return exact.name;
+    const partial = categoryList.find(c => c.name.toLowerCase().includes(cleaned) || cleaned.includes(c.name.toLowerCase()));
+    if (partial) return partial.name;
+    // A small set of common Paytm tag → likely category keyword hints, for
+    // when the user's category is phrased differently than Paytm's tag
+    const HINTS = {
+      groceries: ['grocery', 'groceries', 'vegetable', 'food'],
+      food: ['food', 'restaurant', 'dining', 'eating'],
+      'bill payments': ['bill', 'utility', 'utilities', 'electricity'],
+      shopping: ['shopping', 'apparel', 'clothes'],
+      'money transfer': ['transfer', 'personal', 'friend', 'family'],
+      cashback: null, // cashback is income, not an expense — never auto-categorized as an expense
+      recharge: ['recharge', 'mobile', 'phone', 'bill'],
+      travel: ['travel', 'transport', 'commute', 'fuel', 'petrol'],
+      entertainment: ['entertainment', 'movie', 'subscription'],
+      medical: ['medical', 'health', 'pharmacy', 'medicine'],
+    };
+    const hintKeywords = HINTS[cleaned];
+    if (hintKeywords === null) return null; // explicitly excluded (e.g. cashback)
+    if (hintKeywords) {
+      for (const kw of hintKeywords) {
+        const match = categoryList.find(c => c.name.toLowerCase().includes(kw));
+        if (match) return match.name;
+      }
+    }
+    return null;
+  };
+
+  // Dividend credits from listed companies typically arrive via NACH, often
+  // (but not always) with "DIV"/"DIVIDEND"/"FNLDIV"/"FIN.DIV" in the
+  // narration. A NACH credit with no dividend keyword is still flagged as a
+  // lower-confidence guess, UNLESS it explicitly says interest — since NACH
+  // credits without an interest label are usually dividends in practice.
+  const isDividendLike = (desc) => {
+    const d = (desc || '').toLowerCase();
+    // \bint\d*\b catches "INT" whether standalone or immediately followed
+    // by digits with no separator (e.g. "1st INT27") — plain \bint\b alone
+    // misses that case, since there's no word boundary between a letter
+    // and a digit with nothing between them.
+    if (/\bint\d*\b|interest/.test(d)) return false;
+    if (/\bdiv\b|dividend|fnldiv|fin\.?div/.test(d)) return true;
+    if (/^nach\//.test(d)) return true;
+    return false;
+  };
+
+  // Pulls a rough company/stock name guess out of a NACH narration, e.g.
+  // "NACH/FBL FIN.DIV25-26/..." → "FBL", "NACH/KALYAN FNLDIV 2026/..." →
+  // "KALYAN" — just a starting point for you to correct in the quick-add form.
+  const guessCompanyName = (desc) => {
+    const m = (desc || '').match(/^NACH\/([^/]+)/i);
+    if (!m) return '';
+    return m[1].replace(/\bFIN\.?DIV.*$|\bFNLDIV.*$|\bDIV.*$/i, '').trim();
+  };
+
+  const handleCsv = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!scanUrl) { toast.error('Set up the bill-scanner URL first (Expenses → MRP Prices → ⚙️) — the Paytm categorizer reuses that same connection'); if (fileRef.current) fileRef.current.value = ''; return; }
+
+    setProcessing(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const workbook = XLSX.read(buf, { type: 'array', cellDates: false });
+
+      var parsedRows;
+      if (source === 'paytm') {
+        const sheet = findTransactionSheet(workbook);
+        const raw = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        if (raw.length === 0) { toast.error('No rows found in that file'); return; }
+        parsedRows = raw.map(row => {
+          const rawAmount = pickField(row, ['Amount']);
+          const { amount, debit } = parseSignedAmount(rawAmount);
+          return {
+            date: parseDate(pickField(row, ['Date', 'Transaction Date', 'Txn Date'])),
+            description: pickField(row, ['Transaction Details', 'Description', 'Details', 'Narration', 'Remarks']) || 'Paytm transaction',
+            amount,
+            debit,
+            tag: pickField(row, ['Tags']),
+            bankAccount: pickField(row, ['Your Account']),
+          };
+        }).filter(r => r.amount > 0);
+      } else {
+        // Generic bank statement (IDFC/HDFC/ICICI and most Indian banks share
+        // this basic shape): find the real header row first, since these
+        // exports usually have several metadata rows before the table starts.
+        const sheetName = workbook.SheetNames[0];
+        const raw = findBankHeaderRowAndParse(workbook.Sheets[sheetName]);
+        if (raw.length === 0) { toast.error("Couldn't find a transaction table in that file — this bank's exact format may differ from what's expected. Share the file (or its column headers) and I'll adjust the parser."); return; }
+        const bankLabel = STATEMENT_SOURCES.find(s => s.key === source)?.bank || 'Bank';
+        parsedRows = raw.map(row => {
+          const { amount, debit } = parseBankAmount(row);
+          return {
+            date: parseDate(pickField(row, ['Date', 'Value Date', 'Transaction Date', 'Txn Date'])),
+            description: pickField(row, ['Narration', 'Description', 'Particulars', 'Transaction Remarks']) || `${bankLabel} transaction`,
+            amount,
+            debit,
+            tag: '', // bank statements don't carry Paytm-style tags — every debit row goes through the AI
+            bankAccount: bankLabel,
+          };
+        }).filter(r => r.amount > 0);
+      }
+
+      if (parsedRows.length === 0) { toast.error("Couldn't read any transactions from that file — share it (or its column headers) and I'll adjust the parser."); return; }
+
+      // Only debit (money OUT) transactions become expenses — credits
+      // (cashback, refunds, self-transfers) are dropped from that flow. For
+      // bank statements specifically, credits that look like stock
+      // dividends are pulled out separately and offered for the Dividend
+      // tracker instead of being silently discarded.
+      const debitsOnly = parsedRows.filter(r => r.debit);
+      let foundDividends = false;
+      if (source !== 'paytm') {
+        const creditRows = parsedRows.filter(r => !r.debit && isDividendLike(r.description));
+        if (creditRows.length > 0) {
+          foundDividends = true;
+          setDividendCandidates(creditRows.map((r, i) => ({
+            _key: `div_${Date.now()}_${i}`,
+            _included: true,
+            date: r.date,
+            amount: r.amount,
+            description: r.description,
+            symbol: guessCompanyName(r.description),
+            shares: '',
+          })));
+          if (stocks.length === 0) stockMasterService.getAll().then(setStocks).catch(() => {});
+          toast.success(`Found ${creditRows.length} possible dividend credit${creditRows.length === 1 ? '' : 's'} — review separately below`);
+        }
+      }
+      if (debitsOnly.length === 0) {
+        if (!foundDividends) toast.error('No debit (money out) transactions found in this file — only credits were detected');
+        setProcessing(false);
+        if (fileRef.current) fileRef.current.value = '';
+        return;
+      }
+
+      // Try Paytm's own Tags first — only rows with no confident local
+      // match get sent to the AI, which keeps API usage down.
+      const localMatches = {};
+      const needsAi = [];
+      debitsOnly.forEach(r => {
+        const m = matchTagToCategory(r.tag, effectiveCats);
+        if (m) localMatches[r.description] = m;
+        else needsAi.push(r);
+      });
+
+      let categoryByDesc = { ...localMatches };
+      if (needsAi.length > 0) {
+        const res = await fetch(scanUrl, {
+          method: 'POST',
+          body: JSON.stringify({ transactions: needsAi.map(r => r.description), categories: cats.map(c => c.name) }),
+          signal: AbortSignal.timeout(120000),
+        });
+        if (!res.ok) throw new Error(`Categorizer returned ${res.status}`);
+        let json;
+        try { json = await res.json(); }
+        catch { throw new Error('Categorizer did not return valid JSON'); }
+        if (!json.success) throw new Error(json.error || 'Categorization failed');
+        (json.categories || []).forEach(c => { categoryByDesc[c.description] = c.category; });
+      }
+
+      const rows = debitsOnly.map((r, i) => {
+        const suggested = categoryByDesc[r.description] || cats[0]?.name || '';
+        return {
+          _key: `${Date.now()}_${i}`,
+          _included: true,
+          date: r.date,
+          description: r.description,
+          amount: r.amount,
+          category: suggested,
+          aiSuggested: suggested,
+          fromTag: !!localMatches[r.description], // true if Paytm's own tag decided this, not the AI
+          bankAccount: r.bankAccount,
+        };
+      });
+
+      const tagCount = Object.keys(localMatches).length;
+      const summary = `Categorized ${rows.length} transaction${rows.length === 1 ? '' : 's'}${tagCount > 0 ? ` (${tagCount} from Paytm's own tags, no AI needed)` : ''} — review before saving`;
+      if (foundDividends) {
+        // Show the dividend prompt first — the expense review opens right
+        // after it's dismissed, instead of stacking two modals at once.
+        setPendingExpenseRows({ rows, summary });
+      } else {
+        setReviewRows(rows);
+        toast.success(summary);
+      }
+    } catch (err) {
+      console.error('Paytm file processing error:', err);
+      toast.error('Processing failed: ' + (err.message || 'unknown error'));
+    } finally {
+      setProcessing(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const confirmSave = async () => {
+    const selected = (reviewRows || []).filter(r => r._included);
+    if (selected.length === 0) { toast.error('Select at least one transaction'); return; }
+    setSaving(true);
+    try {
+      let saved = 0;
+      const dates = [];
+      for (const r of selected) {
+        try {
+          await expenseService.create({
+            date: r.date,
+            category: r.category,
+            itemName: r.description,
+            amount: parseFloat(r.amount) || 0,
+            paidVia: paidVia || '',
+            notes: `Imported from Paytm CSV${paidVia ? ` (${paidVia})` : ''}`,
+          });
+          saved++;
+          dates.push(r.date);
+        } catch (err) {
+          console.error('Failed to save Paytm transaction', r, err);
+        }
+      }
+      toast.success(`Saved ${saved} of ${selected.length} transaction${selected.length === 1 ? '' : 's'} to the List tab`);
+      setReviewRows(null);
+      onExpensesChanged?.(dates);
+    } catch (err) {
+      console.error('Paytm save error:', err);
+      toast.error('Save failed: ' + (err?.message || 'unknown error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDividends = async () => {
+    const selected = (dividendCandidates || []).filter(r => r._included);
+    if (selected.length === 0) { toast.error('Select at least one credit'); return; }
+    setSaving(true);
+    try {
+      let saved = 0;
+      for (const r of selected) {
+        if (!r.symbol) { toast.error(`Skipped ₹${r.amount} on ${r.date} — no stock symbol entered`); continue; }
+        try {
+          const shares = parseFloat(r.shares) || 0;
+          await dividendService.create({
+            symbol: r.symbol.toUpperCase().trim(),
+            stockName: r.symbol.trim(),
+            date: r.date,
+            shares,
+            dividendPerShare: shares > 0 ? (parseFloat(r.amount) || 0) / shares : 0,
+            totalAmount: parseFloat(r.amount) || 0,
+            notes: `Imported from ${STATEMENT_SOURCES.find(s => s.key === source)?.bank || 'bank'} statement: ${r.description}`,
+          });
+          saved++;
+        } catch (err) {
+          console.error('Failed to save dividend', r, err);
+        }
+      }
+      toast.success(`Added ${saved} of ${selected.length} dividend${selected.length === 1 ? '' : 's'} — check Portfolio → Dividends`);
+      setDividendCandidates(null);
+    } catch (err) {
+      console.error('Dividend save error:', err);
+      toast.error('Save failed: ' + (err?.message || 'unknown error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const revealPendingExpenseReview = () => {
+    if (!pendingExpenseRows) return;
+    setReviewRows(pendingExpenseRows.rows);
+    toast.success(pendingExpenseRows.summary);
+    setPendingExpenseRows(null);
+  };
+
+  const sourceLabel = STATEMENT_SOURCES.find(s => s.key === source)?.label || 'Statement';
+
+  return (
+    <div>
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div className="fw-800 mb-2" style={{ fontSize: 15 }}>📥 Statement Import</div>
+
+        <div className="fg" style={{ maxWidth: 260 }}>
+          <label className="fl">Source</label>
+          <select className="fs" value={source} onChange={e => setSource(e.target.value)}>
+            {STATEMENT_SOURCES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </div>
+
+        <div className="fs-12 text-muted mb-3" style={{ marginTop: 10 }}>
+          {source === 'paytm'
+            ? <>Upload your Paytm statement (Paytm app → Balance &amp; History → Download Statement — despite the filename, it's actually an Excel file). Transactions already tagged by Paytm itself (Groceries, Food, Bill Payments, etc.) are categorized instantly with no AI call; only untagged ones go through the categorizer.</>
+            : <>Upload your {sourceLabel.replace(/^🏦 /, '')} statement (usually an Excel/XLS download from net banking). Every debit transaction is categorized by AI based on its narration, since bank statements don't carry ready-made tags the way Paytm does. This format is unverified against a real {sourceLabel.replace(/^🏦 /, '')} file — if it doesn't parse correctly, share the file (or its column headers) and I'll fix the parser.</>
+          }
+          {' '}Review and confirm before anything is saved.
+        </div>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleCsv} disabled={processing} />
+        <button className="btn btn-primary" onClick={() => fileRef.current?.click()} disabled={processing}>
+          {processing ? <span className="spin" /> : '📥'} {processing ? 'Processing...' : `Upload ${sourceLabel.replace(/^(🅿️|🏦) /, '')} Statement`}
+        </button>
+        {!scanUrl && (
+          <div className="fs-11 text-muted mt-2">⚠️ Needs the bill-scanner connection set up first — go to MRP Prices → ⚙️ to configure it once (this reuses the same connection).</div>
+        )}
+      </div>
+
+      {reviewRows && (
+        <PaytmReviewModal
+          rows={reviewRows}
+          setRows={setReviewRows}
+          cats={effectiveCats}
+          paidVia={paidVia}
+          setPaidVia={setPaidVia}
+          onCategoryAdded={(newCat) => setLocalCats(prev => [...prev, { id: `local_${newCat.name}`, ...newCat }])}
+          onConfirm={confirmSave}
+          onClose={() => setReviewRows(null)}
+          saving={saving}
+        />
+      )}
+
+      {dividendCandidates && (
+        <DividendCandidatesModal
+          rows={dividendCandidates}
+          setRows={setDividendCandidates}
+          stocks={stocks}
+          onConfirm={async () => { await confirmDividends(); revealPendingExpenseReview(); }}
+          onClose={() => { setDividendCandidates(null); revealPendingExpenseReview(); }}
+          saving={saving}
+        />
+      )}
+    </div>
+  );
+}
+
+function MrpPricesTab({ onExpensesChanged }) {
   const [entries, setEntries] = useState([]);
+  const [cats, setCats] = useState([]); // Settings-managed expense categories (shared with the main Expenses tab)
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [edit, setEdit] = useState(null);
@@ -2109,6 +2429,13 @@ function MrpPricesTab() {
   const [catFilter, setCatFilter] = useState('');
   const [search, setSearch] = useState('');
   const [selectedItem, setSelectedItem] = useState(null); // for chart drill-down
+  // Daily list defaults to the current month only — the full history is
+  // still used underneath for the Monthly Summary comparisons below, this
+  // just keeps the day-by-day table from showing every entry ever added.
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; });
+  const [dateTo, setDateTo] = useState(() => today());
+  const [showMonthlySummary, setShowMonthlySummary] = useState(false);
+  const [summaryCategory, setSummaryCategory] = useState('');
 
   // Checkbox bulk-select state
   const [selected, setSelected] = useState(new Set());
@@ -2119,15 +2446,37 @@ function MrpPricesTab() {
   const [importing, setImporting] = useState(false);
   const jsonFileRef = useRef(null);
 
+  // Bill photo scan state
+  const [scanning, setScanning] = useState(false);
+  const [scanReview, setScanReview] = useState(null); // array of editable rows pending confirmation, or null
+  const [scanPaidVia, setScanPaidVia] = useState(''); // applies to all Expense entries this scan creates
+  const [confirming, setConfirming] = useState(false);
+  const photoFileRef = useRef(null);
+  const [scanUrl, setScanUrl] = useState(() => localStorage.getItem('fintrack_scan_gas_url') || '');
+  const [showScanUrlInput, setShowScanUrlInput] = useState(false);
+  const [scanUrlInput, setScanUrlInput] = useState('');
+  const saveScanUrl = () => {
+    const url = scanUrlInput.trim();
+    if (!url) { toast.error('Enter a valid URL'); return; }
+    localStorage.setItem('fintrack_scan_gas_url', url);
+    setScanUrl(url);
+    setShowScanUrlInput(false);
+    toast.success('Bill scanner URL saved!');
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     const uid = auth.currentUser?.uid;
     if (!uid) { setLoading(false); toast.error('Not signed in'); return; }
     try {
-      const snap = await getDocs(query(collection(db, 'mrpprices'), where('userId', '==', uid)));
+      const [snap, expCats] = await Promise.all([
+        getDocs(query(collection(db, 'mrpprices'), where('userId', '==', uid))),
+        categoryService.getAll('expense'),
+      ]);
       const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       rows.sort((a, b) => new Date(b.date) - new Date(a.date));
       setEntries(rows);
+      setCats(expCats);
     } catch (err) {
       console.error('MRP load error:', err);
       toast.error('Failed to load MRP prices');
@@ -2189,6 +2538,52 @@ function MrpPricesTab() {
     finally { setBulkDeleting(false); }
   };
 
+  // ─── Shared row importer — used by both JSON-file import and photo scan ───
+  // Expects rows like: { Name, Type, Qty, Date, MRPOrRate, Notes? }
+  const importRows = async (rows) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) { toast.error('Not signed in'); return { imported: 0, skipped: rows.length }; }
+
+    let imported = 0;
+    let skipped = 0;
+    const skippedRows = [];
+    const nowISO = new Date().toISOString();
+    for (const row of rows) {
+      const itemName = row.Name || row.name || row.itemName || row.Item;
+      const mrpRaw = row.MRPOrRate ?? row.MRP ?? row.mrp ?? row.Rate ?? row.Price;
+      const mrp = parseFloat(mrpRaw);
+      if (!itemName || !mrp || mrp <= 0 || Number.isNaN(mrp)) {
+        skipped++; skippedRows.push(row);
+        continue; // skip invalid rows
+      }
+
+      // Normalize category: trim whitespace, match case-insensitively against
+      // the user's actual Settings categories (shared with the main Expenses
+      // tab) so MRP entries use the same category names throughout the app.
+      let rawCategory = String(row.Type || row.Category || row.category || cats[0]?.name || 'Grocery').trim();
+      const matched = cats.find(c => c.name.toLowerCase() === rawCategory.toLowerCase());
+      const category = matched ? matched.name : rawCategory;
+
+      const unit = row.Qty || row.Unit || row.unit || 'KG';
+      const date = mrpParseDate(row.Date || row.date);
+
+      try {
+        const docRef = await addDoc(collection(db, 'mrpprices'), {
+          category, itemName: String(itemName).trim(), mrp, unit,
+          date, notes: row.Notes || row.notes || '',
+          userId: uid, createdAt: nowISO, updatedAt: nowISO,
+        });
+        console.log('MRP import: wrote doc', docRef.id, { category, itemName, mrp, date });
+        imported++;
+      } catch (writeErr) {
+        console.error('MRP import: write failed for row', row, writeErr);
+        skipped++; skippedRows.push(row);
+      }
+    }
+    if (skippedRows.length) console.warn('MRP import: skipped rows', skippedRows);
+    return { imported, skipped, total: rows.length };
+  };
+
   // ─── JSON Import ───
   // Expects an array of objects like:
   // { "Name": "Tomato", "Type": "Vegetable", "Qty": "KG", "Date": "17/06/2026", "MRPOrRate": "41" }
@@ -2233,42 +2628,8 @@ function MrpPricesTab() {
         }
       }
 
-      let imported = 0;
-      let skipped = 0;
-      const skippedRows = [];
-      const nowISO = new Date().toISOString();
-      for (const row of rows) {
-        const itemName = row.Name || row.name || row.itemName || row.Item;
-        const mrpRaw = row.MRPOrRate ?? row.MRP ?? row.mrp ?? row.Rate ?? row.Price;
-        const mrp = parseFloat(mrpRaw);
-        if (!itemName || !mrp || mrp <= 0 || Number.isNaN(mrp)) {
-          skipped++; skippedRows.push(row);
-          continue; // skip invalid rows
-        }
-
-        // Normalize category: trim whitespace, match case-insensitively against known categories
-        let rawCategory = String(row.Type || row.Category || row.category || 'Grocery').trim();
-        const matched = MRP_CATEGORIES.find(c => c.key.toLowerCase() === rawCategory.toLowerCase());
-        const category = matched ? matched.key : rawCategory;
-
-        const unit = row.Qty || row.Unit || row.unit || 'KG';
-        const date = mrpParseDate(row.Date || row.date);
-
-        try {
-          const docRef = await addDoc(collection(db, 'mrpprices'), {
-            category, itemName: String(itemName).trim(), mrp, unit,
-            date, notes: row.Notes || row.notes || '',
-            userId: uid, createdAt: nowISO, updatedAt: nowISO,
-          });
-          console.log('MRP import: wrote doc', docRef.id, { category, itemName, mrp, date });
-          imported++;
-        } catch (writeErr) {
-          console.error('MRP import: write failed for row', row, writeErr);
-          skipped++; skippedRows.push(row);
-        }
-      }
-      if (skippedRows.length) console.warn('MRP import: skipped rows', skippedRows);
-      if (imported > 0) toast.success(`Imported ${imported} of ${rows.length} price entries!`);
+      const { imported, skipped, total } = await importRows(rows);
+      if (imported > 0) toast.success(`Imported ${imported} of ${total} price entries!`);
       if (skipped > 0) toast.error(`${skipped} row(s) skipped — check console for details`);
       await load();
     } catch (err) {
@@ -2280,16 +2641,248 @@ function MrpPricesTab() {
     }
   };
 
-  // ─── Group by category, then by item ───
+  // ─── Bill Photo Scan ───
+  // Resizes the photo client-side (keeps upload small + cheap), sends it to
+  // the Apps Script → Gemini proxy, then feeds the returned rows through
+  // the exact same importRows() path as JSON import.
+  const compressImageToBase64 = (file) => new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read photo'));
+    reader.onload = () => {
+      img.onerror = () => reject(new Error('Could not decode photo'));
+      img.onload = () => {
+        // 1400px / quality 0.7 — a bit tighter than before specifically for
+        // mobile: phone camera photos are often 3000px+ and several MB,
+        // which makes the upload itself slow on mobile data even before
+        // Gemini starts processing it. This keeps most bills well under 1MB.
+        const MAX_DIM = 1400;
+        let { width, height } = img;
+        if (width > height && width > MAX_DIM) { height = Math.round(height * (MAX_DIM / width)); width = MAX_DIM; }
+        else if (height > MAX_DIM) { width = Math.round(width * (MAX_DIM / height)); height = MAX_DIM; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7)); // "data:image/jpeg;base64,...."
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const scanAbortRef = useRef(null); // lets the Cancel button actually stop an in-flight scan
+
+  const cancelScan = () => {
+    if (scanAbortRef.current) scanAbortRef.current.abort();
+    setScanning(false);
+    toast('Scan cancelled', { icon: '✋' });
+    if (photoFileRef.current) photoFileRef.current.value = '';
+  };
+
+  const handleBillPhoto = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!scanUrl) { setShowScanUrlInput(true); toast.error('Set your bill-scanner URL first'); if (photoFileRef.current) photoFileRef.current.value = ''; return; }
+
+    setScanning(true);
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
+    // 150s of actual network time, but a mobile browser pauses this timer
+    // while the tab is backgrounded (e.g. while you're in the native camera
+    // app or another app) — so this alone can't catch every stuck case,
+    // which is exactly why there's now a manual Cancel button too.
+    const timeoutId = setTimeout(() => controller.abort(), 150000);
+
+    // If you switch away (camera app, another tab, lock screen) and come
+    // back while it's still scanning, let you know it's still working
+    // rather than leaving you guessing whether it's frozen.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && scanAbortRef.current === controller) {
+        toast('Still scanning your bill…', { icon: '⏳' });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    try {
+      const base64Image = await compressImageToBase64(file);
+      const res = await fetch(scanUrl, {
+        method: 'POST',
+        body: JSON.stringify({ image: base64Image, categories: cats.map(c => c.name) }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Scanner returned ${res.status}`);
+
+      let json;
+      try { json = await res.json(); }
+      catch { throw new Error('Scanner did not return valid JSON — check the deployment is set to "Anyone" access.'); }
+      if (!json.success) throw new Error(json.error || 'Scan failed');
+
+      const items = Array.isArray(json.items) ? json.items : [];
+      if (items.length === 0) { toast.error('No items detected on the bill — try a clearer photo'); return; }
+
+      // Apply the bill's date (if the model found one) to every row that lacks its own,
+      // and give each row a stable key + "included" flag for the review popup.
+      const rows = items.map((it, i) => ({
+        _key: `${Date.now()}_${i}`,
+        _included: true,
+        Name: it.Name || '',
+        Type: it.Type || cats[0]?.name || 'Grocery',
+        Qty: it.Qty || 'KG',
+        MRPOrRate: it.Rate ?? it.MRPOrRate ?? '',
+        Amount: it.Amount ?? it.Rate ?? it.MRPOrRate ?? '', // line total — falls back to Rate if the model didn't return one
+        Date: it.Date || json.date || today(),
+      }));
+
+      setScanReview(rows);
+      toast.success(`Found ${rows.length} item${rows.length === 1 ? '' : 's'} — review before saving`);
+    } catch (err) {
+      console.error('Bill photo scan error:', err);
+      if (err.name === 'AbortError') {
+        toast.error('Scan timed out or was cancelled. Try again with a clearer, closer photo, or on a stronger connection.');
+      } else {
+        toast.error('Scan failed: ' + (err.message || 'unknown error'));
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      document.removeEventListener('visibilitychange', onVisible);
+      scanAbortRef.current = null;
+      setScanning(false);
+      if (photoFileRef.current) photoFileRef.current.value = '';
+    }
+  };
+
+  // Called from the review popup once the user confirms the (possibly edited) rows
+  const confirmScanImport = async () => {
+    const selected = (scanReview || []).filter(r => r._included);
+    if (selected.length === 0) { toast.error('Select at least one item'); return; }
+    setConfirming(true);
+    try {
+      const { imported, skipped, total } = await importRows(selected);
+      if (imported > 0) toast.success(`Added ${imported} of ${total} items to MRP tracker!`);
+      if (skipped > 0) toast.error(`${skipped} item(s) skipped — check console for details`);
+
+      // Group by (date, category) and sum the line Amount, then write one
+      // Expense entry per group — this is what makes the scanned bill show
+      // up as a total on the main Expenses List tab, split by category the
+      // same way the receipt itself is.
+      const groups = {};
+      selected.forEach(r => {
+        const date = r.Date || today();
+        const category = r.Type || cats[0]?.name || 'Grocery';
+        const amt = parseFloat(r.Amount ?? r.MRPOrRate) || 0;
+        const key = `${date}__${category}`;
+        if (!groups[key]) groups[key] = { date, category, amount: 0, count: 0, names: [] };
+        groups[key].amount += amt;
+        groups[key].count += 1;
+        if (r.Name) groups[key].names.push(r.Name);
+      });
+
+      let expensesCreated = 0;
+      const affectedDates = [];
+      for (const g of Object.values(groups)) {
+        if (g.amount <= 0) continue;
+        // Use the actual item names (same text saved to the MRP Prices tab)
+        // as the note, instead of just a count — e.g. "Tomato, Onion, Ginger"
+        const itemList = g.names.join(', ');
+        try {
+          await expenseService.create({
+            date: g.date,
+            category: g.category,
+            itemName: `Bill scan — ${g.category}`,
+            paidVia: scanPaidVia || '',
+            amount: g.amount,
+            notes: itemList || `${g.count} item${g.count === 1 ? '' : 's'} from scanned bill`,
+          });
+          expensesCreated++;
+          affectedDates.push(g.date);
+        } catch (err) {
+          console.error('Failed to create expense for scanned bill group', g, err);
+        }
+      }
+      if (expensesCreated > 0) {
+        toast.success(`Added ${expensesCreated} expense${expensesCreated === 1 ? '' : 's'} to the List tab (by category)`);
+        onExpensesChanged?.(affectedDates);
+      }
+
+      setScanReview(null);
+      await load();
+    } catch (err) {
+      console.error('Confirm scan import error:', err);
+      toast.error('Save failed: ' + (err.message || 'unknown error'));
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+
   const filtered = entries
+    .filter(e => e.date >= dateFrom && e.date <= dateTo)
     .filter(e => !catFilter || e.category === catFilter)
     .filter(e => !search || (e.itemName || '').toLowerCase().includes(search.toLowerCase()));
 
-  // Per-category counts (based on category only, ignoring search) for the filter pills
-  const catCounts = MRP_CATEGORIES.reduce((acc, c) => {
-    acc[c.key] = entries.filter(e => e.category === c.key).length;
+  // Same date range as `filtered`, but without the category filter applied —
+  // this is what the category pill counts are based on, so switching
+  // categories doesn't change what "100% of visible entries" means.
+  const dateFilteredEntries = entries.filter(e => e.date >= dateFrom && e.date <= dateTo);
+
+  // Per-category counts, derived from actual entries in the selected date
+  // range (not just the Settings list, and not the full history) so a
+  // category that was scanned/imported without an exact Settings match
+  // still shows up correctly, and the pill counts match what's visible below.
+  const catCounts = dateFilteredEntries.reduce((acc, e) => {
+    const name = e.category || 'Uncategorized';
+    acc[name] = (acc[name] || 0) + 1;
     return acc;
   }, {});
+  // Ordered list of category names to render: known Settings categories that
+  // have entries, first (in Settings order), then any leftover category
+  // names present in the data but not in the Settings list.
+  const knownNames = cats.map(c => c.name);
+  const categoryGroups = [
+    ...knownNames.filter(n => catCounts[n] > 0),
+    ...Object.keys(catCounts).filter(n => !knownNames.includes(n)),
+  ];
+
+  // ─── Monthly Summary (avg / low / high per product, by period) ───
+  // Answers "what did this cost this month vs last month vs the last 3
+  // months vs this time last year" without having to scroll through every
+  // daily entry — once a month is over, this is the view that matters, not
+  // the day-by-day log.
+  //
+  // Dates are stored as plain "YYYY-MM-DD" strings, so every boundary here
+  // is also a plain string — comparing strings lexicographically gives the
+  // correct chronological order with zero timezone risk. (An earlier
+  // version built these boundaries with `new Date(y, m, d)`, which uses
+  // local time, then compared against `new Date(dateString)`, which parses
+  // as UTC — mixing those two is what caused Last Month to sometimes come
+  // up empty.)
+  const now = new Date();
+  const pad2 = n => String(n).padStart(2, '0');
+  const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate(); // just a day-count lookup, no timezone-sensitive comparison involved
+  const monthStartStr = (y, m) => `${y}-${pad2(m + 1)}-01`;
+  const monthEndStr = (y, m) => `${y}-${pad2(m + 1)}-${pad2(daysInMonth(y, m))}`;
+  const shiftMonth = (y, m, delta) => { const d = new Date(y, m + delta, 1); return { y: d.getFullYear(), m: d.getMonth() }; };
+  const nowYear = now.getFullYear(), nowMonth = now.getMonth();
+  const todayStr = today();
+  const last = shiftMonth(nowYear, nowMonth, -1);
+  const threeAgo = shiftMonth(nowYear, nowMonth, -2);
+  const summaryPeriods = [
+    { key: 'current', label: 'Current Month', startStr: monthStartStr(nowYear, nowMonth), endStr: todayStr },
+    { key: 'last', label: 'Last Month', startStr: monthStartStr(last.y, last.m), endStr: monthEndStr(last.y, last.m) },
+    { key: '3month', label: 'Last 3 Months', startStr: monthStartStr(threeAgo.y, threeAgo.m), endStr: todayStr },
+    { key: 'lastyear', label: 'Last Year (same month)', startStr: monthStartStr(nowYear - 1, nowMonth), endStr: monthEndStr(nowYear - 1, nowMonth) },
+  ];
+  const summaryCatEntries = entries.filter(e => e.category === (summaryCategory || categoryGroups[0]));
+  const summaryProducts = [...new Set(summaryCatEntries.map(e => e.itemName))].filter(Boolean).sort();
+  const summaryCell = (product, period) => {
+    const vals = summaryCatEntries
+      .filter(e => e.itemName === product && e.date >= period.startStr && e.date <= period.endStr)
+      .map(e => parseFloat(e.mrp) || 0)
+      .filter(v => v > 0);
+    if (vals.length === 0) return null;
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    return { avg, low: Math.min(...vals), high: Math.max(...vals), count: vals.length };
+  };
 
   const itemMap = {};
   filtered.forEach(e => {
@@ -2341,8 +2934,85 @@ function MrpPricesTab() {
         <button className="btn btn-secondary" onClick={() => jsonFileRef.current?.click()} disabled={importing}>
           {importing ? <span className="spin" /> : '📥'} Import JSON
         </button>
+        <input ref={photoFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleBillPhoto} disabled={scanning} />
+        <button className="btn btn-secondary" onClick={() => photoFileRef.current?.click()} disabled={scanning}>
+          {scanning ? <span className="spin" /> : '📷'} {scanning ? 'Scanning...' : 'Scan Bill'}
+        </button>
+        {scanning && (
+          <button className="btn btn-danger btn-sm" onClick={cancelScan} title="Stop this scan and try again">✋ Cancel</button>
+        )}
+        <button className="btn btn-secondary" onClick={() => setShowMonthlySummary(v => !v)}>
+          {showMonthlySummary ? '🙈 Hide' : '📊 Show'} Monthly Summary
+        </button>
+        <button className="btn-icon" style={{ border: '1px solid var(--border2)', borderRadius: 8, padding: '5px 8px' }}
+          onClick={() => { setShowScanUrlInput(v => !v); setScanUrlInput(scanUrl); }} title="Configure bill scanner URL">⚙️</button>
         <button className="btn btn-primary" onClick={() => { setEdit(null); setModal(true); }}>➕ Add Price</button>
       </div>
+
+      {showMonthlySummary && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="flex items-center justify-between mb-3" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="fw-800 fs-13">📊 Monthly Price Summary</div>
+            <select className="fs" style={{ minWidth: 160 }} value={summaryCategory || categoryGroups[0] || ''} onChange={e => setSummaryCategory(e.target.value)}>
+              {categoryGroups.length === 0 && <option value="">No categories yet</option>}
+              {categoryGroups.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+          {summaryProducts.length === 0 ? (
+            <div className="fs-12 text-muted" style={{ padding: 16, textAlign: 'center' }}>No price entries in this category yet</div>
+          ) : (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    {summaryProducts.map(p => <th key={p} style={{ textAlign: 'right' }}>{p}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryPeriods.map(period => (
+                    <tr key={period.key} style={period.key === 'current' ? { background: 'var(--bg3)' } : undefined}>
+                      <td className={period.key === 'current' ? 'fw-800' : 'fw-700'} style={{ whiteSpace: 'nowrap' }}>{period.label}</td>
+                      {summaryProducts.map(p => {
+                        const cell = summaryCell(p, period);
+                        return (
+                          <td key={p} style={{ textAlign: 'right' }}>
+                            {cell ? (
+                              <div>
+                                <div className="fw-700 fs-12">{fmt(cell.avg)}</div>
+                                <div className="fs-10 text-muted">{fmt(cell.low)}–{fmt(cell.high)}</div>
+                              </div>
+                            ) : <span className="text-muted fs-12">—</span>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="fs-11 text-muted mt-2">Each cell shows Average, with the Low–High range below it. The Current Month row is highlighted — that's the range worth checking before you buy.</div>
+        </div>
+      )}
+
+      {showScanUrlInput && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="fs-12 fw-700 mb-2">📷 Bill Scanner Setup (Apps Script + OpenAI, one-time)</div>
+          <div style={{ background: 'var(--bg3)', borderRadius: 8, padding: '10px 12px', fontSize: 11, color: 'var(--t2)', marginBottom: 10, lineHeight: 1.7 }}>
+            1. Deploy the BillScanner Apps Script (from a personal Gmail account) → Web app → Execute as Me, access Anyone<br />
+            2. Add your OpenAI API key in the script's Project Settings → Script Properties as <code>OPENAI_API_KEY</code><br />
+            3. Copy the deployed /exec URL and paste it below
+          </div>
+          <div className="flex gap-2">
+            <input className="fi" style={{ flex: 1, fontSize: 12 }} placeholder="https://script.google.com/macros/s/XXXXXXXX/exec"
+              value={scanUrlInput} onChange={e => setScanUrlInput(e.target.value)} />
+            <button className="btn btn-primary btn-sm" onClick={saveScanUrl}>Save URL</button>
+            {scanUrl && <button className="btn btn-secondary btn-sm" onClick={() => { localStorage.removeItem('fintrack_scan_gas_url'); setScanUrl(''); setShowScanUrlInput(false); toast.success('URL cleared'); }}>Clear</button>}
+          </div>
+        </div>
+      )}
+
 
       {/* Category filter pills + search */}
       <div className="flex items-center gap-3 mb-4" style={{ flexWrap: 'wrap' }}>
@@ -2351,18 +3021,23 @@ function MrpPricesTab() {
             style={{ padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `2px solid ${!catFilter ? 'var(--blue)' : 'var(--border2)'}`, background: !catFilter ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: !catFilter ? 'var(--blue)' : 'var(--t3)' }}>
             🌐 All <span style={{ opacity: .7 }}>({entries.length})</span>
           </button>
-          {MRP_CATEGORIES.map(c => (
-            <button key={c.key} onClick={() => setCatFilter(catFilter === c.key ? '' : c.key)}
-              style={{ padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `2px solid ${catFilter === c.key ? c.color : 'var(--border2)'}`, background: catFilter === c.key ? `${c.color}20` : 'var(--bg3)', color: catFilter === c.key ? c.color : 'var(--t3)' }}>
-              {c.label} <span style={{ opacity: .7 }}>({catCounts[c.key] || 0})</span>
-            </button>
-          ))}
+          {categoryGroups.map(name => {
+            const color = mrpCategoryColor(name, cats);
+            return (
+              <button key={name} onClick={() => setCatFilter(catFilter === name ? '' : name)}
+                style={{ padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `2px solid ${catFilter === name ? color : 'var(--border2)'}`, background: catFilter === name ? `${color}20` : 'var(--bg3)', color: catFilter === name ? color : 'var(--t3)' }}>
+                {name} <span style={{ opacity: .7 }}>({catCounts[name] || 0})</span>
+              </button>
+            );
+          })}
         </div>
         <div className="search" style={{ flex: 1, minWidth: 180 }}>
           <input placeholder="🔍 Search item name..." value={search} onChange={e => setSearch(e.target.value)} />
           {search && <button onClick={() => setSearch('')} className="btn-ghost">✕</button>}
         </div>
+        <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
       </div>
+      <div className="fs-11 text-muted mb-3">Showing {fmtDate(dateFrom)} – {fmtDate(dateTo)} below. Full history is still used for the Monthly Summary comparisons above.</div>
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
@@ -2421,26 +3096,33 @@ function MrpPricesTab() {
             </div>
           </div>
 
-          {/* Price High-Difference Chart */}
-          {diffChartData.length > 0 && (
+          {/* Price High-Difference Table */}
+          {itemList.length > 0 && (
             <div className="card mb-4">
-              <div className="card-title">📊 Price Range (Min vs Max MRP) — Top Items by Difference</div>
-              <ResponsiveContainer width="100%" height={Math.max(260, diffChartData.length * 38)}>
-                <BarChart data={diffChartData} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: 'var(--t3)' }} />
-                  <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11, fill: 'var(--t2)' }} />
-                  <Tooltip
-                    contentStyle={{ background: 'var(--bg2)', border: '1px solid var(--border2)', borderRadius: 8, fontSize: 12 }}
-                    formatter={(val, name) => [`₹${val}`, name === 'min' ? 'Min Price' : name === 'max' ? 'Max Price' : 'Difference']}
-                    labelFormatter={(label, payload) => payload?.[0]?.payload?.fullName || label}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="min" name="Min Price" fill="#22c55e" radius={[0, 4, 4, 0]} barSize={14} />
-                  <Bar dataKey="max" name="Max Price" fill="#f43f5e" radius={[0, 4, 4, 0]} barSize={14} />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="text-muted fs-11 mt-2">💡 Click an item row below to see its full price history chart</div>
+              <div className="card-title">📊 Price Range (Min vs Max MRP) — Top 5 Items by Difference</div>
+              <div className="tbl-wrap">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th style={{ textAlign: 'right' }}>Min Price</th>
+                      <th style={{ textAlign: 'right' }}>Max Price</th>
+                      <th style={{ textAlign: 'right' }}>Difference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemList.slice(0, 5).map(it => (
+                      <tr key={it.itemName} style={{ cursor: 'pointer' }} onClick={() => setSelectedItem(`${it.category}__${it.itemName.toLowerCase()}`)}>
+                        <td className="fw-700">{it.itemName}</td>
+                        <td style={{ textAlign: 'right' }} className="amt amt-g">{fmt(it.minPrice)}</td>
+                        <td style={{ textAlign: 'right' }} className="amt amt-r">{fmt(it.maxPrice)}</td>
+                        <td style={{ textAlign: 'right' }} className="fw-800">{fmt(it.priceDiff)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-muted fs-11 mt-2">💡 Click a row to see its full price history chart</div>
             </div>
           )}
 
@@ -2464,15 +3146,16 @@ function MrpPricesTab() {
           )}
 
           {/* Grouped tables by category, with checkboxes for bulk edit/delete */}
-          {MRP_CATEGORIES.filter(c => !catFilter || catFilter === c.key).map(cat => {
-            const catEntries = filtered.filter(e => e.category === cat.key).sort((a, b) => new Date(b.date) - new Date(a.date));
+          {categoryGroups.filter(name => !catFilter || catFilter === name).map(catName => {
+            const catColor = mrpCategoryColor(catName, cats);
+            const catEntries = filtered.filter(e => e.category === catName).sort((a, b) => new Date(b.date) - new Date(a.date));
             if (catEntries.length === 0) return null;
             const catIds = catEntries.map(e => e.id);
             const allCatSelected = catIds.length > 0 && catIds.every(id => selected.has(id));
 
             return (
-              <div key={cat.key} className="card mb-4">
-                <div className="card-title" style={{ color: cat.color }}>{cat.label} ({catEntries.length} entries)</div>
+              <div key={catName} className="card mb-4">
+                <div className="card-title" style={{ color: catColor }}>{catName} ({catEntries.length} entries)</div>
                 <div className="tbl-wrap">
                   <table className="tbl">
                     <thead>
@@ -2520,61 +3203,9 @@ function MrpPricesTab() {
             );
           })}
 
-          {/* Fallback: entries whose category doesn't match any known category (e.g. typo, custom value) */}
-          {(() => {
-            const knownKeys = MRP_CATEGORIES.map(c => c.key);
-            const otherEntries = filtered.filter(e => !knownKeys.includes(e.category)).sort((a, b) => new Date(b.date) - new Date(a.date));
-            if (otherEntries.length === 0 || (catFilter && catFilter !== '')) return null;
-            const otherIds = otherEntries.map(e => e.id);
-            const allOtherSelected = otherIds.length > 0 && otherIds.every(id => selected.has(id));
-            return (
-              <div className="card mb-4">
-                <div className="card-title" style={{ color: 'var(--t3)' }}>📂 Other / Uncategorized ({otherEntries.length} entries)</div>
-                <div className="text-muted fs-11 mb-2">These entries have a category value that doesn't match Grocery, Vegetable, Fruit, or House Basic Needs — likely from an import. Edit them to assign a known category.</div>
-                <div className="tbl-wrap">
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 36 }}>
-                          <input type="checkbox" checked={allOtherSelected}
-                            onChange={() => setSelected(p => {
-                              const n = new Set(p);
-                              if (allOtherSelected) otherIds.forEach(id => n.delete(id));
-                              else otherIds.forEach(id => n.add(id));
-                              return n;
-                            })} />
-                        </th>
-                        <th>Item</th>
-                        <th>Category (as stored)</th>
-                        <th style={{ textAlign: 'right' }}>MRP</th>
-                        <th>Unit</th>
-                        <th>Date</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {otherEntries.map(e => (
-                        <tr key={e.id} style={{ background: selected.has(e.id) ? 'rgba(77,158,255,.07)' : 'transparent' }}>
-                          <td><input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelect(e.id)} /></td>
-                          <td><span className="fw-700 fs-13">{e.itemName}</span></td>
-                          <td><span style={{ fontSize: 11, color: 'var(--red, #f43f5e)', fontWeight: 700 }}>"{e.category}"</span></td>
-                          <td style={{ textAlign: 'right' }}><span className="amt amt-r fw-800">₹{(+e.mrp).toFixed(2)}</span></td>
-                          <td><span style={{ fontSize: 12, color: 'var(--t3)' }}>{e.unit}</span></td>
-                          <td style={{ fontSize: 12, color: 'var(--t3)', whiteSpace: 'nowrap' }}>{fmtDate(e.date)}</td>
-                          <td>
-                            <div className="actions" style={{ justifyContent: 'center' }}>
-                              <button className="btn-icon" onClick={() => { setEdit(e); setModal(true); }}>✏️</button>
-                              <button className="btn-icon" onClick={() => setDelId(e.id)}>🗑️</button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            );
-          })()}
+          {/* Note: entries with a category name that doesn't exactly match a
+              Settings category still render above, in their own group named
+              after whatever value is actually stored — see categoryGroups. */}
 
           {/* Summary table: per-item min/max/diff across all entries */}
           {itemList.length > 0 && (
@@ -2600,7 +3231,7 @@ function MrpPricesTab() {
                       return (
                         <tr key={key} style={{ cursor: 'pointer' }} onClick={() => setSelectedItem(key)}>
                           <td><span className="fw-700 fs-13">{it.itemName}</span></td>
-                          <td><span style={{ fontSize: 11, color: mrpCategoryColor(it.category), fontWeight: 700 }}>{it.category}</span></td>
+                          <td><span style={{ fontSize: 11, color: mrpCategoryColor(it.category, cats), fontWeight: 700 }}>{it.category}</span></td>
                           <td style={{ textAlign: 'right' }}><span className="amt amt-r fw-800">₹{(+it.latest.mrp).toFixed(2)}</span></td>
                           <td style={{ textAlign: 'right', color: 'var(--green)' }}>₹{it.minPrice.toFixed(2)}</td>
                           <td style={{ textAlign: 'right', color: 'var(--red, #f43f5e)' }}>₹{it.maxPrice.toFixed(2)}</td>
@@ -2623,10 +3254,22 @@ function MrpPricesTab() {
 
       {modal && (
         <Modal title={edit ? '✏️ Edit MRP Price' : '➕ Add MRP Price'} onClose={() => { setModal(false); setEdit(null); }}>
-          <MrpEntryForm item={edit} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
+          <MrpEntryForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} />
         </Modal>
       )}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
+      {scanReview && (
+        <ScanReviewModal
+          rows={scanReview}
+          setRows={setScanReview}
+          cats={cats}
+          paidVia={scanPaidVia}
+          setPaidVia={setScanPaidVia}
+          onConfirm={confirmScanImport}
+          onClose={() => setScanReview(null)}
+          saving={confirming}
+        />
+      )}
       {confirmBulkDel && (
         <div className="modal-overlay" onClick={() => setConfirmBulkDel(false)}>
           <div className="modal" style={{ maxWidth: 360, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
@@ -2645,518 +3288,60 @@ function MrpPricesTab() {
 
 
 // ─── Compare Tab ───────────────────────────────────────────
-const COMPARE_MODES = [
-  { key: '2y',  label: '2 Years',  months: 24 },
-  { key: '1y',  label: '1 Year',   months: 12 },
-  { key: '6m',  label: '6 Months', months: 6 },
-  { key: '3m',  label: '3 Months', months: 3 },
-  { key: 'week',label: 'Weekly',   months: 0 },
-];
-
-// ─── Compare Tab ───────────────────────────────────────────
-function CompareTab({ showFixed, isFixedCat }) {
-  const [mode, setMode] = useState('6m');
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [selCats, setSelCats] = useState(new Set());
-  const [allCats, setAllCats] = useState([]);
-  const [view, setView] = useState('bar'); // bar | line | table | category
-
-  const now = new Date();
-  const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      if (mode === 'week') {
-        const allItems = await expenseService.getAll({ year: now.getFullYear() });
-        const prevYearItems = await expenseService.getAll({ year: now.getFullYear() - 1 });
-        const allCombined = [...prevYearItems, ...allItems];
-        const combined = showFixed ? allCombined : allCombined.filter(i => !isFixedCat || !isFixedCat(i.category));
-        const weeks = [];
-        for (let w = 11; w >= 0; w--) {
-          const weekEnd = new Date(now);
-          weekEnd.setDate(now.getDate() - w * 7);
-          const weekStart = new Date(weekEnd);
-          weekStart.setDate(weekEnd.getDate() - 6);
-          const label = `${weekStart.getDate()} ${MONTHS_SHORT[weekStart.getMonth()]}`;
-          const weekItems = combined.filter(i => { const d = new Date(i.date); return d >= weekStart && d <= weekEnd; });
-          const total = weekItems.reduce((s, i) => s + +i.amount, 0);
-          const cats = {};
-          weekItems.forEach(i => { cats[i.category] = (cats[i.category] || 0) + +i.amount; });
-          weeks.push({ label, total, ...cats, _items: weekItems });
-        }
-        setData(weeks);
-        const catSet = new Set(combined.map(i => i.category).filter(Boolean));
-        setAllCats([...catSet].sort());
-      } else {
-        const mCount = COMPARE_MODES.find(m => m.key === mode).months;
-        const months = [];
-        for (let i = mCount - 1; i >= 0; i--) {
-          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-          months.push({ m: d.getMonth() + 1, y: d.getFullYear(), label: `${MONTHS_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}` });
-        }
-        const fetched = await Promise.all(months.map(({ m, y }) => expenseService.getAll({ month: m, year: y })));
-        const rows = months.map(({ label }, idx) => {
-          const rawItems = fetched[idx];
-          const items = showFixed ? rawItems : rawItems.filter(i => !isFixedCat || !isFixedCat(i.category));
-          const total = items.reduce((s, i) => s + +i.amount, 0);
-          const cats = {};
-          items.forEach(i => { cats[i.category] = (cats[i.category] || 0) + +i.amount; });
-          return { label, total, ...cats, _items: items };
-        });
-        setData(rows);
-        const allFlat = showFixed ? fetched.flat() : fetched.flat().filter(i => !isFixedCat || !isFixedCat(i.category));
-        const catSet = new Set(allFlat.map(i => i.category).filter(Boolean));
-        setAllCats([...catSet].sort());
-      }
-    } catch (e) { toast.error('Failed to load'); console.error(e); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, [mode, showFixed]);
-
-  // ── Derived stats ──────────────────────────────────────────
-  const topCats = allCats
-    .map(cat => ({ cat, total: data.reduce((s, d) => s + (d[cat] || 0), 0) }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 12);
-
-  const displayCats = selCats.size > 0 ? topCats.filter(c => selCats.has(c.cat)) : topCats.slice(0, 6);
-  const toggleCat = (cat) => setSelCats(s => { const n = new Set(s); n.has(cat) ? n.delete(cat) : n.add(cat); return n; });
-
-  const totals = data.map(d => d.total);
-  const avg = totals.length > 0 ? totals.reduce((s, v) => s + v, 0) / totals.length : 0;
-  const maxPeriod = data.reduce((m, d) => d.total > (m?.total || 0) ? d : m, null);
-  const minPeriod = data.filter(d => d.total > 0).reduce((m, d) => d.total < (m?.total || Infinity) ? d : m, null);
-  const trend = totals.length >= 2 ? totals[totals.length - 1] - totals[0] : 0;
-  const trendPct = totals.length >= 2 && totals[0] > 0 ? ((totals[totals.length - 1] - totals[0]) / totals[0]) * 100 : 0;
-
-  // Last vs second-last period change
-  const lastTotal = totals[totals.length - 1] || 0;
-  const prevTotal = totals[totals.length - 2] || 0;
-  const momChange = prevTotal > 0 ? ((lastTotal - prevTotal) / prevTotal) * 100 : 0;
-
-  // ── Top Movers: categories with biggest change last vs prev period ──
-  const topMovers = data.length >= 2
-    ? allCats.map(cat => {
-        const last = data[data.length - 1][cat] || 0;
-        const prev = data[data.length - 2][cat] || 0;
-        return { cat, last, prev, change: last - prev, pct: prev > 0 ? ((last - prev) / prev) * 100 : (last > 0 ? 100 : 0) };
-      })
-      .filter(m => m.last > 0 || m.prev > 0)
-      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
-      .slice(0, 5)
-    : [];
-
-  // ── Export CSV ─────────────────────────────────────────────
-  const handleExport = () => {
-    if (!data.length) return;
-    const headers = ['Period', 'Total', ...topCats.map(c => c.cat)];
-    const rows = data.map(d => [d.label, d.total, ...topCats.map(c => d[c.cat] || 0)]);
-    const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `compare_${mode}.csv`; a.click();
-    URL.revokeObjectURL(url);
-    toast.success('Exported!');
-  };
-
-  // ── Shared Tooltip ─────────────────────────────────────────
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    const total = payload.reduce((s, p) => s + (p.value || 0), 0);
-    return (
-      <div style={{ background: 'var(--bg2)', border: '1px solid var(--border2)', borderRadius: 12, padding: '12px 16px', fontSize: 12, maxWidth: 240, boxShadow: '0 4px 20px rgba(0,0,0,.2)' }}>
-        <div className="fw-800 mb-2" style={{ fontSize: 13 }}>{label}</div>
-        {payload.map((p, i) => (
-          <div key={i} className="flex justify-between gap-4 mb-1">
-            <span style={{ color: p.color || p.fill, display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 8, height: 8, borderRadius: 2, background: p.color || p.fill, display: 'inline-block', flexShrink: 0 }} />
-              {p.name}
-            </span>
-            <span className="fw-700">₹{Number(p.value).toLocaleString('en-IN')}</span>
-          </div>
-        ))}
-        {payload.length > 1 && (
-          <div className="flex justify-between gap-4 mt-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-            <span className="fw-700 text-muted">Total</span>
-            <span className="fw-800">₹{total.toLocaleString('en-IN')}</span>
-          </div>
-        )}
-        {payload.length === 1 && avg > 0 && (
-          <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--t3)' }}>
-            {payload[0].value > avg
-              ? <span style={{ color: '#f43f5e' }}>▲ {((payload[0].value / avg - 1) * 100).toFixed(1)}% above avg</span>
-              : <span style={{ color: '#22c55e' }}>▼ {((1 - payload[0].value / avg) * 100).toFixed(1)}% below avg</span>}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div>
-      {/* ── Header controls ─────────────────────────────────── */}
-      <div className="flex gap-2 mb-4" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
-        {/* Period mode pills */}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {COMPARE_MODES.map(m => (
-            <button key={m.key} onClick={() => setMode(m.key)}
-              style={{ padding: '6px 16px', borderRadius: 20, border: `2px solid ${mode === m.key ? 'var(--blue)' : 'var(--border2)'}`, background: mode === m.key ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: mode === m.key ? 'var(--blue)' : 'var(--t2)', fontWeight: 700, fontSize: 12, cursor: 'pointer', transition: 'all .15s' }}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Right: view toggle + export */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-          <div style={{ display: 'flex', background: 'var(--bg3)', borderRadius: 10, border: '1px solid var(--border2)', padding: 3, gap: 2 }}>
-            {[
-              { v: 'bar',      icon: '📊', label: 'Bar' },
-              { v: 'line',     icon: '📈', label: 'Line' },
-              { v: 'table',    icon: '📋', label: 'Table' },
-              { v: 'category', icon: '🗂️', label: 'Category' },
-            ].map(({ v, icon, label }) => (
-              <button key={v} onClick={() => setView(v)}
-                title={label}
-                style={{ padding: '5px 11px', borderRadius: 8, border: 'none', background: view === v ? 'var(--bg2)' : 'transparent', color: view === v ? 'var(--blue)' : 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', transition: 'all .15s', boxShadow: view === v ? '0 1px 4px rgba(0,0,0,.15)' : 'none' }}>
-                {icon} {label}
-              </button>
-            ))}
-          </div>
-          <button onClick={handleExport} title="Export CSV"
-            style={{ padding: '6px 12px', borderRadius: 8, border: '1.5px solid var(--border2)', background: 'var(--bg3)', color: 'var(--t2)', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
-            ⬇️ Export
-          </button>
-        </div>
-      </div>
-
-      {!showFixed && (
-        <div style={{ background:'rgba(249,115,22,.08)', border:'1px solid rgba(249,115,22,.25)', borderRadius:8, padding:'8px 14px', marginBottom:12, fontSize:12, color:'var(--orange)', fontWeight:700 }}>
-          🔀 Variable only — Fixed (House Rent, RD, Gold) excluded from all comparisons
-        </div>
-      )}
-
-      {loading ? <div className="spin-center"><div className="spin spin-lg" /></div> : (
-        <>
-          {/* ── Summary stat cards ────────────────────────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
-            {/* Average */}
-            <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', borderLeft: '3px solid var(--blue)' }}>
-              <div className="fs-11 text-muted mb-1">📊 Period Average</div>
-              <div className="fw-800 fs-15" style={{ color: 'var(--blue)' }}>{fmt(avg)}</div>
-              <div className="fs-10 text-muted mt-1">{data.length} periods</div>
-            </div>
-            {/* Highest */}
-            <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', borderLeft: '3px solid var(--red)' }}>
-              <div className="fs-11 text-muted mb-1">📈 Highest</div>
-              <div className="fw-800 fs-15" style={{ color: 'var(--red)' }}>{maxPeriod ? fmt(maxPeriod.total) : '—'}</div>
-              <div className="fs-10 text-muted mt-1">{maxPeriod?.label || ''}</div>
-            </div>
-            {/* Lowest */}
-            <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', borderLeft: '3px solid var(--green)' }}>
-              <div className="fs-11 text-muted mb-1">📉 Lowest</div>
-              <div className="fw-800 fs-15" style={{ color: 'var(--green)' }}>{minPeriod ? fmt(minPeriod.total) : '—'}</div>
-              <div className="fs-10 text-muted mt-1">{minPeriod?.label || ''}</div>
-            </div>
-            {/* Overall trend */}
-            <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', borderLeft: `3px solid ${trend <= 0 ? 'var(--green)' : 'var(--red)'}` }}>
-              <div className="fs-11 text-muted mb-1">{trend <= 0 ? '✅' : '⚠️'} Overall Trend</div>
-              <div className="fw-800 fs-15" style={{ color: trend <= 0 ? 'var(--green)' : 'var(--red)' }}>{trend >= 0 ? '+' : ''}{fmt(trend)}</div>
-              <div className="fs-10 text-muted mt-1">{trendPct >= 0 ? '+' : ''}{trendPct.toFixed(1)}% first→last</div>
-            </div>
-            {/* MoM change */}
-            {data.length >= 2 && (
-              <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', borderLeft: `3px solid ${momChange <= 0 ? 'var(--green)' : '#f59e0b'}` }}>
-                <div className="fs-11 text-muted mb-1">{momChange <= 0 ? '🎉' : '🔔'} vs Last Period</div>
-                <div className="fw-800 fs-15" style={{ color: momChange <= 0 ? 'var(--green)' : '#f59e0b' }}>{momChange >= 0 ? '+' : ''}{momChange.toFixed(1)}%</div>
-                <div className="fs-10 text-muted mt-1">{data[data.length - 2]?.label} → {data[data.length - 1]?.label}</div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Top Movers ────────────────────────────────────── */}
-          {topMovers.length > 0 && (
-            <div className="card mb-4">
-              <div className="card-title" style={{ marginBottom: 10 }}>🔥 Top Movers <span className="text-muted fw-400 fs-12">({data[data.length - 2]?.label} → {data[data.length - 1]?.label})</span></div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-                {topMovers.map((m, i) => (
-                  <div key={m.cat} style={{ background: 'var(--bg3)', borderRadius: 10, padding: '10px 12px', border: `1px solid ${m.change > 0 ? 'rgba(244,63,94,.2)' : 'rgba(34,197,94,.2)'}` }}>
-                    <div className="flex justify-between items-start">
-                      <div className="fw-700 fs-12" style={{ color: 'var(--text)', maxWidth: 120 }}>{m.cat}</div>
-                      <span style={{ fontSize: 12, fontWeight: 800, color: m.change > 0 ? 'var(--red)' : 'var(--green)', background: m.change > 0 ? 'rgba(244,63,94,.1)' : 'rgba(34,197,94,.1)', borderRadius: 20, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-                        {m.change > 0 ? '▲' : '▼'} {Math.abs(m.pct).toFixed(0)}%
-                      </span>
-                    </div>
-                    <div className="fs-11 text-muted mt-1">{fmt(m.prev)} → <span className="fw-700" style={{ color: m.change > 0 ? 'var(--red)' : 'var(--green)' }}>{fmt(m.last)}</span></div>
-                    {/* Mini progress bar */}
-                    <div style={{ marginTop: 8, background: 'var(--border)', borderRadius: 4, height: 4, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${Math.min(100, (m.last / Math.max(m.last, m.prev)) * 100)}%`, background: m.change > 0 ? 'var(--red)' : 'var(--green)', borderRadius: 4, transition: 'width .4s' }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── BAR CHART VIEW ────────────────────────────────── */}
-          {view === 'bar' && (
-            <div className="card mb-4">
-              <div className="flex justify-between items-center mb-3">
-                <div className="card-title" style={{ margin: 0 }}>💰 Total Expenses — {COMPARE_MODES.find(m => m.key === mode)?.label}</div>
-              </div>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={data} margin={{ top: 12, right: 12, bottom: 8, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--t3)' }} tickLine={false} axisLine={false} />
-                  <YAxis tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} width={52} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={avg} stroke="var(--blue)" strokeDasharray="5 3" strokeWidth={1.5}
-                    label={{ value: `Avg ₹${avg >= 1000 ? (avg/1000).toFixed(1)+'k' : avg.toFixed(0)}`, position: 'insideTopRight', fontSize: 10, fill: 'var(--blue)', fontWeight: 700 }} />
-                  <Bar dataKey="total" name="Total Spend" radius={[6,6,0,0]} maxBarSize={52}>
-                    {data.map((d, i) => (
-                      <Cell key={i} fill={d.total > avg * 1.2 ? '#f43f5e' : d.total < avg * 0.8 ? '#22c55e' : '#4d9eff'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="flex gap-4 mt-3" style={{ flexWrap: 'wrap', fontSize: 11, color: 'var(--t3)' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#22c55e', display: 'inline-block' }} /> Below avg (&lt;80%)</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#4d9eff', display: 'inline-block' }} /> Near avg</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: '#f43f5e', display: 'inline-block' }} /> Above avg (&gt;120%)</span>
-                <span style={{ marginLeft: 'auto' }}>Avg: <strong>{fmt(avg)}</strong></span>
-              </div>
-            </div>
-          )}
-
-          {/* ── LINE CHART VIEW ───────────────────────────────── */}
-          {view === 'line' && (
-            <div className="card mb-4">
-              <div className="card-title mb-3">📈 Spend Trend — {COMPARE_MODES.find(m => m.key === mode)?.label}</div>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={data} margin={{ top: 12, right: 16, bottom: 8, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--t3)' }} tickLine={false} axisLine={false} />
-                  <YAxis tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} width={52} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={avg} stroke="var(--blue)" strokeDasharray="5 3" strokeWidth={1.5}
-                    label={{ value: `Avg`, position: 'insideTopRight', fontSize: 10, fill: 'var(--blue)', fontWeight: 700 }} />
-                  <Line type="monotone" dataKey="total" name="Total Spend" stroke="#4d9eff" strokeWidth={2.5} dot={{ r: 5, fill: '#4d9eff', stroke: 'var(--bg)', strokeWidth: 2 }} activeDot={{ r: 7 }} />
-                </LineChart>
-              </ResponsiveContainer>
-              <div className="fs-11 text-muted mt-2" style={{ textAlign: 'center' }}>
-                Dashed line = average ({fmt(avg)})
-              </div>
-            </div>
-          )}
-
-          {/* ── TABLE VIEW ────────────────────────────────────── */}
-          {view === 'table' && (
-            <div className="card mb-4">
-              <div className="card-title">📋 Period-wise Breakdown</div>
-              <div className="tbl-wrap">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Period</th>
-                      <th style={{ textAlign: 'right' }}>Total</th>
-                      <th style={{ textAlign: 'right' }}>vs Avg</th>
-                      <th style={{ textAlign: 'right' }}>vs Prev</th>
-                      <th style={{ textAlign: 'right' }}>MoM %</th>
-                      <th>Top Category</th>
-                      <th style={{ textAlign: 'right' }}>Records</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.map((d, i) => {
-                      const vsAvg = d.total - avg;
-                      const vsAvgPct = avg > 0 ? (vsAvg / avg) * 100 : 0;
-                      const vsPrev = i > 0 ? d.total - data[i-1].total : null;
-                      const vsPrevPct = i > 0 && data[i-1].total > 0 ? ((d.total - data[i-1].total) / data[i-1].total) * 100 : null;
-                      const topCat = allCats.map(c => ({ c, v: d[c] || 0 })).sort((a,b) => b.v - a.v)[0];
-                      const isHigh = d.total > avg * 1.2;
-                      const isLow = d.total < avg * 0.8;
-                      return (
-                        <tr key={i} style={{ background: isHigh ? 'rgba(244,63,94,.04)' : isLow ? 'rgba(34,197,94,.04)' : 'transparent' }}>
-                          <td>
-                            <div className="flex items-center gap-2">
-                              {isHigh && <span style={{ fontSize: 10, background: 'rgba(244,63,94,.12)', color: 'var(--red)', borderRadius: 20, padding: '1px 6px', fontWeight: 800 }}>HIGH</span>}
-                              {isLow && <span style={{ fontSize: 10, background: 'rgba(34,197,94,.12)', color: 'var(--green)', borderRadius: 20, padding: '1px 6px', fontWeight: 800 }}>LOW</span>}
-                              <span className="fw-700">{d.label}</span>
-                            </div>
-                          </td>
-                          <td style={{ textAlign: 'right' }}><span className="amt fw-800">{fmt(d.total)}</span></td>
-                          <td style={{ textAlign: 'right' }}>
-                            <div>
-                              <span className={`fw-700 fs-12 ${vsAvg <= 0 ? 'amt-g' : 'amt-r'}`}>{vsAvg >= 0 ? '+' : ''}{fmt(vsAvg)}</span>
-                              <div className="fs-10 text-muted">{vsAvgPct >= 0 ? '+' : ''}{vsAvgPct.toFixed(1)}%</div>
-                            </div>
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            {vsPrev !== null
-                              ? <span className={`fw-700 fs-12 ${vsPrev <= 0 ? 'amt-g' : 'amt-r'}`}>{vsPrev >= 0 ? '+' : ''}{fmt(vsPrev)}</span>
-                              : <span className="text-muted fs-12">—</span>}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            {vsPrevPct !== null
-                              ? <span style={{ fontSize: 11, fontWeight: 800, color: vsPrevPct <= 0 ? 'var(--green)' : 'var(--red)', background: vsPrevPct <= 0 ? 'rgba(34,197,94,.1)' : 'rgba(244,63,94,.1)', borderRadius: 20, padding: '2px 7px' }}>
-                                  {vsPrevPct >= 0 ? '+' : ''}{vsPrevPct.toFixed(1)}%
-                                </span>
-                              : <span className="text-muted fs-12">—</span>}
-                          </td>
-                          <td>
-                            {topCat?.v > 0
-                              ? <span style={{ background: 'var(--bg3)', borderRadius: 20, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>{topCat.c} · {fmt(topCat.v)}</span>
-                              : <span className="text-muted fs-12">—</span>}
-                          </td>
-                          <td style={{ textAlign: 'right' }} className="text-muted fs-12">{d._items?.length || 0}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td className="fw-700 text-muted fs-12" style={{ padding: '8px 14px' }}>AVERAGE</td>
-                      <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(avg)}</span></td>
-                      <td colSpan={5} />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* ── CATEGORY VIEW ─────────────────────────────────── */}
-          {view === 'category' && (
-            <div>
-              {/* Category chips with spend totals */}
-              <div className="card mb-3">
-                <div className="flex justify-between items-center mb-3">
-                  <div className="fs-13 fw-700">Filter Categories <span className="text-muted fw-400">(top 12 by spend)</span></div>
-                  {selCats.size > 0 && (
-                    <button onClick={() => setSelCats(new Set())} style={{ fontSize: 11, fontWeight: 700, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer' }}>
-                      Clear ({selCats.size})
-                    </button>
-                  )}
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  <button onClick={() => setSelCats(new Set())}
-                    style={{ padding: '5px 14px', borderRadius: 20, border: `1.5px solid ${selCats.size === 0 ? 'var(--blue)' : 'var(--border2)'}`, background: selCats.size === 0 ? 'rgba(77,158,255,.15)' : 'var(--bg3)', color: selCats.size === 0 ? 'var(--blue)' : 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                    Top 6
-                  </button>
-                  {topCats.map((c, i) => {
-                    const color = PALETTE[i % PALETTE.length];
-                    const active = selCats.has(c.cat);
-                    const grandTotal = topCats.reduce((s, t) => s + t.total, 0);
-                    const pct = grandTotal > 0 ? (c.total / grandTotal * 100).toFixed(0) : 0;
-                    return (
-                      <button key={c.cat} onClick={() => toggleCat(c.cat)}
-                        style={{ padding: '5px 12px', borderRadius: 20, border: `1.5px solid ${active ? color : 'var(--border2)'}`, background: active ? color + '20' : 'var(--bg3)', color: active ? color : 'var(--t2)', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, transition: 'all .15s' }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                        {c.cat}
-                        <span style={{ opacity: .7, fontWeight: 400 }}>{pct}%</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Stacked bar chart by category */}
-              <div className="card mb-4">
-                <div className="card-title">🗂️ Category Breakdown by Period</div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <BarChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--t3)' }} tickLine={false} axisLine={false} />
-                    <YAxis tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} tick={{ fontSize: 10, fill: 'var(--t3)' }} tickLine={false} axisLine={false} width={52} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                    {displayCats.map((c, i) => (
-                      <Bar key={c.cat} dataKey={c.cat} stackId="a" fill={PALETTE[topCats.findIndex(t => t.cat === c.cat) % PALETTE.length]} maxBarSize={52} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Category × Period table with mini sparkbars */}
-              <div className="card">
-                <div className="card-title">📊 Category × Period Table</div>
-                <div className="tbl-wrap">
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>Category</th>
-                        {data.map((d, i) => <th key={i} style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{d.label}</th>)}
-                        <th style={{ textAlign: 'right' }}>Total</th>
-                        <th style={{ textAlign: 'right' }}>Avg/Period</th>
-                        <th style={{ textAlign: 'right' }}>Trend</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayCats.map((c, ci) => {
-                        const color = PALETTE[topCats.findIndex(t => t.cat === c.cat) % PALETTE.length];
-                        const vals = data.map(d => d[c.cat] || 0);
-                        const catTotal = vals.reduce((s, v) => s + v, 0);
-                        const catAvg = vals.length > 0 ? catTotal / vals.length : 0;
-                        const maxVal = Math.max(...vals);
-                        const catTrend = vals.length >= 2 ? vals[vals.length - 1] - vals[0] : 0;
-                        return (
-                          <tr key={c.cat}>
-                            <td>
-                              <div className="flex items-center gap-2">
-                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                                <span className="fw-600 fs-13">{c.cat}</span>
-                              </div>
-                            </td>
-                            {vals.map((v, i) => (
-                              <td key={i} style={{ textAlign: 'right' }}>
-                                <div>
-                                  <span className={`fw-700 fs-12 ${v === maxVal && v > 0 ? 'amt-r' : v === 0 ? 'text-muted' : ''}`}>{v > 0 ? fmt(v) : '—'}</span>
-                                  {v > 0 && <div style={{ background: color + '30', borderRadius: 3, height: 3, width: `${Math.max(8, (v / maxVal) * 60)}px`, marginLeft: 'auto', marginTop: 3 }} />}
-                                </div>
-                              </td>
-                            ))}
-                            <td style={{ textAlign: 'right' }}><span className="amt fw-800">{fmt(catTotal)}</span></td>
-                            <td style={{ textAlign: 'right' }} className="text-muted fs-12">{fmt(catAvg)}</td>
-                            <td style={{ textAlign: 'right' }}>
-                              {vals.length >= 2
-                                ? <span style={{ fontSize: 11, fontWeight: 800, color: catTrend <= 0 ? 'var(--green)' : 'var(--red)' }}>
-                                    {catTrend >= 0 ? '▲' : '▼'} {fmt(Math.abs(catTrend))}
-                                  </span>
-                                : <span className="text-muted fs-12">—</span>}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td className="fw-700 text-muted fs-12" style={{ padding: '8px 14px' }}>TOTAL</td>
-                        {data.map((d, i) => <td key={i} style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(d.total)}</span></td>)}
-                        <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-800">{fmt(data.reduce((s, d) => s + d.total, 0))}</span></td>
-                        <td style={{ textAlign: 'right', padding: '8px 14px' }}><span className="fw-700">{fmt(avg)}</span></td>
-                        <td />
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── Insights Tab ─────────────────────────────────────────
 const INSIGHTS_PERIODS = [
   { key: 'weekly',    label: 'Weekly',   unit: 'wk', tag: '8-week' },
   { key: '3m',        label: '3 Months', unit: 'mo', tag: '3-month' },
   { key: '6m',        label: '6 Months', unit: 'mo', tag: '6-month' },
   { key: '1y',        label: '1 Year',   unit: 'mo', tag: '1-year' },
 ];
+
+// ─── Add Category (quick-add from the Insights → Group by Category view) ──
+// Creates a new expense category directly, without leaving this page.
+// Note: a brand-new category won't appear in "Group by Category" until you
+// log at least one expense in it — this view is driven by actual
+// transactions, not the master category list, same as the rest of Insights.
+const ADD_CAT_COLORS = ['#4d9eff', '#22c55e', '#a78bfa', '#f97316', '#f43f5e', '#fbbf24', '#38bdf8', '#e879f9', '#10d98a', '#fb7185'];
+function AddCategoryModal({ onClose, onAdded }) {
+  const [name, setName] = useState('');
+  const [color, setColor] = useState(ADD_CAT_COLORS[0]);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim()) { toast.error('Enter a category name'); return; }
+    setSaving(true);
+    try {
+      await categoryService.create({ name: name.trim(), type: 'expense', color });
+      toast.success(`Added "${name.trim()}" — log an expense in it to see it here`);
+      onAdded({ name: name.trim(), color });
+    } catch (err) {
+      console.error('Add category failed:', err);
+      toast.error('Failed to add category: ' + (err?.message || 'unknown error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="➕ Add Category" onClose={onClose}>
+      <div className="fg">
+        <label className="fl">Category Name</label>
+        <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Pet Care, Subscriptions" autoFocus />
+      </div>
+      <div className="fg">
+        <label className="fl">Color</label>
+        <div className="flex gap-2" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+          {ADD_CAT_COLORS.map(c => (
+            <button key={c} type="button" onClick={() => setColor(c)} style={{ width: 28, height: 28, borderRadius: '50%', background: c, border: `3px solid ${color === c ? 'var(--text)' : 'transparent'}`, cursor: 'pointer' }} />
+          ))}
+        </div>
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? <span className="spin" /> : null} Add Category</button>
+      </div>
+    </Modal>
+  );
+}
 
 function InsightsTab({ showFixed, isFixedCat }) {
   const now = new Date();
@@ -3165,6 +3350,12 @@ function InsightsTab({ showFixed, isFixedCat }) {
 
   const [loading, setLoading] = useState(true);
   const [period, setPeriod]   = useState('3m'); // 'weekly' | '3m' | '6m' | '1y'
+  const [showPeriodTable, setShowPeriodTable] = useState(false); // hidden by default
+  const [showPieChart, setShowPieChart] = useState(false); // hidden by default
+  const [showGroupedByCategory, setShowGroupedByCategory] = useState(false); // hidden by default
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [expandedCats, setExpandedCats] = useState(new Set());
+  const [catSort, setCatSort] = useState({ key: 'total', dir: 'desc' }); // key: 'total' | 'avg' | a month index (number)
   const [monthData, setMonthData]   = useState([]); // period buckets, array of { label, total, ...cats, _items }
   const [allCats, setAllCats]       = useState([]);
 
@@ -3243,12 +3434,16 @@ function InsightsTab({ showFixed, isFixedCat }) {
 
   useEffect(() => { load(); }, [showFixed, period]);
 
-  // Top cats by total spend across the selected period
-  const topCats = allCats
+  // All categories with spend in the selected period — used for the table below (no cap, per user request)
+  const allCatTotals = allCats
     .map(cat => ({ cat, total: monthData.reduce((s, d) => s + (d[cat] || 0), 0) }))
     .filter(c => c.total > 0)
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 12);
+    .sort((a, b) => b.total - a.total);
+
+  // Top 8 only — feeds the stacked bar chart's legend/series, where more
+  // than ~8 segments becomes visually unreadable. The table further down
+  // uses allCatTotals instead, so it isn't limited by this.
+  const topCats = allCatTotals.slice(0, 8);
 
   // Per-bucket averages per category
   const avgByCat = topCats.map(({ cat, total }) => ({
@@ -3256,6 +3451,22 @@ function InsightsTab({ showFixed, isFixedCat }) {
     avg: monthData.length > 0 ? total / monthData.length : 0,
     color: PALETTE_INS[topCats.findIndex(c => c.cat === cat) % PALETTE_INS.length],
   })).sort((a, b) => b.avg - a.avg).slice(0, 10);
+
+  // Shared row data for the Category × Month table, the pie chart, and the
+  // group-by-category accordion — one place computes it, three views use it.
+  const catRows = allCatTotals.map(({ cat, total }, i) => {
+    const vals = monthData.map(d => d[cat] || 0);
+    const avg = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    return { cat, vals, avg, total, color: PALETTE_INS[i % PALETTE_INS.length] };
+  });
+  const sortedCatRows = [...catRows].sort((a, b) => {
+    const va = catSort.key === 'total' ? a.total : catSort.key === 'avg' ? a.avg : (a.vals[catSort.key] || 0);
+    const vb = catSort.key === 'total' ? b.total : catSort.key === 'avg' ? b.avg : (b.vals[catSort.key] || 0);
+    return catSort.dir === 'desc' ? vb - va : va - vb;
+  });
+  const toggleCatSort = (key) => setCatSort(prev => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
+  const sortArrow = (key) => catSort.key === key ? (catSort.dir === 'desc' ? ' ▼' : ' ▲') : '';
+  const toggleCatExpand = (cat) => setExpandedCats(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n; });
 
   // Per-month category totals for stacked bar
   const stackedData = monthData.map(d => {
@@ -3365,23 +3576,40 @@ function InsightsTab({ showFixed, isFixedCat }) {
               </BarChart>
             </ResponsiveContainer>
 
-            {/* Category × Month mini table */}
+            {/* Pie chart — hidden by default */}
+            <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => setShowPieChart(v => !v)}>
+              {showPieChart ? '🙈 Hide' : '🥧 Show'} Pie Chart
+            </button>
+            {showPieChart && (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie data={catRows} dataKey="total" nameKey="cat" cx="50%" cy="50%" outerRadius={100} label={({ cat, percent }) => `${cat} ${(percent * 100).toFixed(0)}%`}>
+                    {catRows.map((r, i) => <Cell key={r.cat} fill={r.color} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => `₹${(+v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+
+            {/* Category × Month table — shows every category, unlike the chart above (capped to top 8 for readability). Click any month or Avg header to sort by that column's price. */}
             <div style={{ marginTop: 16, overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
                     <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--t3)', fontWeight: 700 }}>Category</th>
                     {monthData.map((d, i) => (
-                      <th key={i} style={{ textAlign: 'right', padding: '6px 10px', color: 'var(--t3)', fontWeight: 700 }}>{d.label}</th>
+                      <th key={i} onClick={() => toggleCatSort(i)} style={{ textAlign: 'right', padding: '6px 10px', color: catSort.key === i ? 'var(--blue)' : 'var(--t3)', fontWeight: 700, cursor: 'pointer', userSelect: 'none' }} title="Click to sort by this column">
+                        {d.label}{sortArrow(i)}
+                      </th>
                     ))}
-                    <th style={{ textAlign: 'right', padding: '6px 10px', color: 'var(--t3)', fontWeight: 700 }}>Avg/{periodCfg.unit}</th>
+                    <th onClick={() => toggleCatSort('avg')} style={{ textAlign: 'right', padding: '6px 10px', color: catSort.key === 'avg' ? 'var(--blue)' : 'var(--t3)', fontWeight: 700, cursor: 'pointer', userSelect: 'none' }} title="Click to sort by average">
+                      Avg/{periodCfg.unit}{sortArrow('avg')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {topCats.slice(0, 8).map(({ cat }, i) => {
-                    const color = PALETTE_INS[i % PALETTE_INS.length];
-                    const vals = monthData.map(d => d[cat] || 0);
-                    const avg = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+                  {sortedCatRows.map(({ cat, vals, avg, color }) => {
                     const maxVal = Math.max(...vals);
                     return (
                       <tr key={cat} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -3418,6 +3646,118 @@ function InsightsTab({ showFixed, isFixedCat }) {
                 </tfoot>
               </table>
             </div>
+
+            {/* Group by Category — hidden by default. Expand a category to see its month-by-month breakdown and the actual transactions behind each period. */}
+            <div className="flex items-center gap-2" style={{ marginTop: 14, flexWrap: 'wrap' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowGroupedByCategory(v => !v)}>
+                {showGroupedByCategory ? '🙈 Hide' : '📂 Show'} Group by Category
+              </button>
+              {showGroupedByCategory && (
+                <button className="btn btn-primary btn-sm" onClick={() => setShowAddCategory(true)}>+ Add Category</button>
+              )}
+            </div>
+            {showAddCategory && (
+              <AddCategoryModal onClose={() => setShowAddCategory(false)} onAdded={() => setShowAddCategory(false)} />
+            )}
+            {showGroupedByCategory && sortedCatRows.length === 0 && (
+              <div className="text-muted fs-12" style={{ marginTop: 12, padding: 16, textAlign: 'center', background: 'var(--bg3)', borderRadius: 10 }}>
+                No categories with any spend in the selected period ({period}). Try widening the period above, or check that expenses have been logged with a category.
+              </div>
+            )}
+            {showGroupedByCategory && sortedCatRows.length > 0 && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="flex items-center justify-between" style={{ padding: '10px 14px', background: 'var(--bg3)', borderRadius: 10, fontWeight: 800, fontSize: 13 }}>
+                  <span>Grand Total ({sortedCatRows.length} categor{sortedCatRows.length === 1 ? 'y' : 'ies'})</span>
+                  <span style={{ color: 'var(--blue)' }}>₹{sortedCatRows.reduce((s, r) => s + r.total, 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                </div>
+                {sortedCatRows.map(({ cat, vals, avg, total, color }) => {
+                  const isOpen = expandedCats.has(cat);
+                  return (
+                    <div key={cat} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                      <button onClick={() => toggleCatExpand(cat)} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+                        <div className="flex items-center gap-2">
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                          <span className="fw-700 fs-13">{cat}</span>
+                          <span className="text-muted fs-11">{isOpen ? '▲' : '▼'}</span>
+                        </div>
+                        <span className="fw-800 fs-13" style={{ color }}>₹{total.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                      </button>
+                      {isOpen && (
+                        <div style={{ padding: '0 14px 12px', borderTop: '1px solid var(--border)' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 8, marginTop: 10, marginBottom: 10 }}>
+                            {monthData.map((d, i) => (
+                              <div key={i} style={{ background: 'var(--bg3)', borderRadius: 8, padding: '6px 10px' }}>
+                                <div className="fs-10 text-muted">{d.label}</div>
+                                <div className="fw-700 fs-12">{vals[i] > 0 ? `₹${vals[i].toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '—'}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="fs-11 text-muted mb-2">Avg/{periodCfg.unit}: <span className="fw-700" style={{ color }}>₹{avg.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span></div>
+                          {/* Actual transactions in this category, across the selected period */}
+                          <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                            {monthData.flatMap(d => (d._items || []).filter(it => it.category === cat))
+                              .sort((a, b) => new Date(b.date) - new Date(a.date))
+                              .map(it => (
+                                <div key={it.id} className="flex justify-between fs-11" style={{ padding: '4px 0', borderBottom: '1px solid var(--border)' }}>
+                                  <span className="text-muted">{fmtDate(it.date)} · {it.itemName || it.notes || '—'}</span>
+                                  <span className="fw-600">₹{(+it.amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Transposed view: Period (weekly/monthly/etc, per the selector above) on rows, Category on columns — hidden by default */}
+            <button className="btn btn-secondary btn-sm" style={{ marginTop: 14 }} onClick={() => setShowPeriodTable(v => !v)}>
+              {showPeriodTable ? '🙈 Hide' : '📊 Show'} Period × Category Table
+            </button>
+            {showPeriodTable && (
+              <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--t3)', fontWeight: 700 }}>{period === 'weekly' ? 'Week' : 'Month'}</th>
+                      {allCatTotals.map(({ cat }, i) => (
+                        <th key={cat} style={{ textAlign: 'right', padding: '6px 10px', color: PALETTE_INS[i % PALETTE_INS.length], fontWeight: 700 }}>{cat}</th>
+                      ))}
+                      <th style={{ textAlign: 'right', padding: '6px 10px', color: 'var(--t3)', fontWeight: 700 }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monthData.map((d, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '7px 10px', fontWeight: 700 }}>{d.label}</td>
+                        {allCatTotals.map(({ cat }) => {
+                          const v = d[cat] || 0;
+                          return (
+                            <td key={cat} style={{ textAlign: 'right', padding: '7px 10px', color: v === 0 ? 'var(--t3)' : 'var(--text)' }}>
+                              {v > 0 ? `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '—'}
+                            </td>
+                          );
+                        })}
+                        <td style={{ textAlign: 'right', padding: '7px 10px', fontWeight: 800 }}>₹{d.total.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: '2px solid var(--border)' }}>
+                      <td style={{ padding: '8px 10px', fontWeight: 800, color: 'var(--t3)' }}>TOTAL</td>
+                      {allCatTotals.map(({ cat, total }) => (
+                        <td key={cat} style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 800 }}>₹{total.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                      ))}
+                      <td style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 800 }}>
+                        ₹{monthData.reduce((s, d) => s + d.total, 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -3459,6 +3799,20 @@ export default function ExpensesPage() {
   }, [dateFrom, dateTo, catFilter, search]);
 
   useEffect(() => { const t = setTimeout(load, search ? 400 : 0); return () => clearTimeout(t); }, [load]);
+
+  // Called after the MRP tab's bill scanner creates new Expense entries.
+  // If any of those dates fall outside the currently-viewed date range,
+  // widen the range so the new entries are actually visible on this tab
+  // (widening triggers the effect above automatically); otherwise the
+  // dates were already in range, so just force a manual reload.
+  const handleExpensesChangedFromScan = (dates) => {
+    if (!dates || dates.length === 0) return;
+    let newFrom = dateFrom, newTo = dateTo;
+    dates.forEach(d => { if (d < newFrom) newFrom = d; if (d > newTo) newTo = d; });
+    if (newFrom !== dateFrom) setDateFrom(newFrom);
+    if (newTo !== dateTo) setDateTo(newTo);
+    if (newFrom === dateFrom && newTo === dateTo) load();
+  };
 
   const save = async data => {
     try {
@@ -3636,13 +3990,10 @@ export default function ExpensesPage() {
           { key: 'list',      label: '📋 List' },
           { key: 'recurring', label: '🔄 Recurring' },
           { key: 'daily',     label: '📅 Daily' },
-          { key: 'percent',   label: '📊 % Breakdown' },
-          { key: 'groups',    label: '🗂️ Group Summary' },
           { key: 'insights',  label: '💡 Insights' },
-          { key: 'compare',   label: '🔀 Compare' },
-          { key: 'catdetail', label: '🔎 Category Detail' },
           { key: 'paidvia',   label: '💳 Paid Via' },
           { key: 'mrpprices', label: '🏷️ MRP Prices' },
+          { key: 'paytm',     label: '🅿️ Statement Import' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
@@ -3720,6 +4071,23 @@ export default function ExpensesPage() {
                   });
                   const allDates = dateGroups;
                   const allCollapsed = allDates.every(d => collapsedDates.has(d));
+
+                  // Duplicate detection: same date + description + amount is
+                  // almost certainly the same expense entered twice (e.g.
+                  // once manually, once via a Paytm/bank statement import).
+                  // First occurrence (oldest by id order) is marked to keep;
+                  // any later ones sharing the same fingerprint are flagged.
+                  const dupFingerprint = (i) => {
+                    const dk = i.date ? (i.date instanceof Date ? i.date.toISOString().slice(0, 10) : String(i.date).slice(0, 10)) : '';
+                    return `${dk}__${(i.itemName || '').trim().toLowerCase()}__${(+i.amount || 0).toFixed(2)}`;
+                  };
+                  const dupGroups = {};
+                  sortedItems.forEach(i => { const k = dupFingerprint(i); (dupGroups[k] = dupGroups[k] || []).push(i); });
+                  const dupStatus = {}; // id -> 'keep' | 'duplicate'
+                  Object.values(dupGroups).forEach(group => {
+                    if (group.length < 2) return;
+                    group.forEach((i, idx) => { dupStatus[i.id] = idx === 0 ? 'keep' : 'duplicate'; });
+                  });
                   const toggleDate = (dk) => setCollapsedDates(prev => {
                     const n = new Set(prev); n.has(dk) ? n.delete(dk) : n.add(dk); return n;
                   });
@@ -3776,14 +4144,20 @@ export default function ExpensesPage() {
                                   <td colSpan={4} />
                                 </tr>
                                 {/* Expense rows for this date */}
-                                {!isCollapsed && rows.map(i => (
-                                  <tr key={i.id} style={{ background: selected.has(i.id) ? 'rgba(77,158,255,.07)' : 'transparent' }}>
+                                {!isCollapsed && rows.map(i => {
+                                  const dup = dupStatus[i.id]; // 'keep' | 'duplicate' | undefined
+                                  const rowBg = selected.has(i.id) ? 'rgba(77,158,255,.07)'
+                                    : dup === 'keep' ? 'rgba(34,197,94,.08)'
+                                    : dup === 'duplicate' ? 'rgba(244,63,94,.1)'
+                                    : 'transparent';
+                                  return (
+                                  <tr key={i.id} style={{ background: rowBg }}>
                                     <td>
                                       <input type="checkbox" checked={selected.has(i.id)} onChange={() => toggleSelect(i.id)}
                                         style={{ width: 15, height: 15, cursor: 'pointer', accentColor: 'var(--blue)' }} />
                                     </td>
                                     <td style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--t3)', fontWeight: 500, paddingLeft: 24 }}>—</td>
-                                    <td><div className="flex items-center gap-1"><span className="badge badge-r" style={{ fontSize: 13, padding: '4px 12px' }}>{i.category}</span>{isFixedCat(i.category) && <span title="Fixed expense" style={{ fontSize: 10, background: 'rgba(249,115,22,.15)', color: 'var(--orange)', borderRadius: 20, padding: '1px 6px', fontWeight: 700 }}>📌</span>}</div></td>
+                                    <td><div className="flex items-center gap-1"><span className="badge badge-r" style={{ fontSize: 13, padding: '4px 12px' }}>{i.category}</span>{isFixedCat(i.category) && <span title="Fixed expense" style={{ fontSize: 10, background: 'rgba(249,115,22,.15)', color: 'var(--orange)', borderRadius: 20, padding: '1px 6px', fontWeight: 700 }}>📌</span>}{dup === 'keep' && <span title="Kept — an identical entry (same date, description & amount) exists elsewhere" style={{ fontSize: 10, background: 'rgba(34,197,94,.15)', color: 'var(--green)', borderRadius: 20, padding: '1px 6px', fontWeight: 700 }}>✅ Kept</span>}{dup === 'duplicate' && <span title="Possible duplicate — same date, description & amount as another entry" style={{ fontSize: 10, background: 'rgba(244,63,94,.15)', color: 'var(--red)', borderRadius: 20, padding: '1px 6px', fontWeight: 700 }}>⚠️ Duplicate</span>}</div></td>
                                     <td style={{ textAlign: 'right' }}><span className="amt amt-r" style={{ fontSize: 15, fontWeight: 800 }}>{fmt(i.amount)}</span></td>
                                     <td><span style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: 13, fontWeight: 700, color: 'var(--blue)', whiteSpace: 'nowrap' }}>{i.paidVia || '—'}</span></td>
                                     <td style={{ fontSize: 14 }}>
@@ -3812,7 +4186,8 @@ export default function ExpensesPage() {
                                       </div>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </>
                             );
                           })}
@@ -3833,13 +4208,10 @@ export default function ExpensesPage() {
 
       {tab === 'recurring' && <RecurringTab cats={cats} showFixed={showFixed} isFixedCat={isFixedCat} onPaymentRecorded={load} />}
       {tab === 'daily'     && <DailySpendingTab items={filteredByToggle} showFixed={showFixed} />}
-      {tab === 'percent'   && <PercentageTab items={filteredByToggle} showFixed={showFixed} isFixedCat={isFixedCat} allItems={items} cats={cats} onBudgetSave={async (catId, data) => { await categoryService.update(catId, data); load(); }} />}
-      {tab === 'groups'    && <GroupSummaryTab items={filteredByToggle} showFixed={showFixed} cats={cats} />}
       {tab === 'insights'  && <InsightsTab showFixed={showFixed} isFixedCat={isFixedCat} />}
-      {tab === 'compare'   && <CompareTab showFixed={showFixed} isFixedCat={isFixedCat} />}
-      {tab === 'catdetail' && <CategoryDetailTab cats={cats} />}
       {tab === 'paidvia'   && <PaidViaTab items={filteredByToggle} showFixed={showFixed} isFixedCat={isFixedCat} />}
-      {tab === 'mrpprices' && <MrpPricesTab />}
+      {tab === 'mrpprices' && <MrpPricesTab onExpensesChanged={handleExpensesChangedFromScan} />}
+      {tab === 'paytm'     && <PaytmTab cats={cats} onExpensesChanged={handleExpensesChangedFromScan} />}
 
       {modal && <Modal title={edit ? '✏️ Edit Expense' : '➕ Add Expense'} onClose={() => { setModal(false); setEdit(null); }}><ExpForm item={edit} cats={cats} onSave={save} onClose={() => { setModal(false); setEdit(null); }} /></Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}

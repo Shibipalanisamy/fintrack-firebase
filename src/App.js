@@ -1,30 +1,37 @@
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Layout } from './components/UI';
 import AuthPage from './pages/AuthPage';
-import Dashboard from './pages/Dashboard';
-import IncomePage from './pages/IncomePage';
-import ExpensesPage from './pages/ExpensesPage';
-import PortfolioPage from './pages/PortfolioPage';
-import NetWorthPage from './pages/NetWorthPage';
-import LoanCalculatorPage from './pages/LoanCalculatorPage';
-import ReportsPage from './pages/ReportsPage';
-import SettingsPage from './pages/SettingsPage';
-import InsurancePage from './pages/InsurancePage';
-import GoalsPage from './pages/GoalsPage';
-import CardsPage from './pages/CardsPage';
-import BudgetPage from './pages/BudgetPage'
-import BankingPage from './pages/BankingPage'
-import ChangelogPage from './pages/ChangelogPage';
 import AppLock from './AppLock';
 import './App.css';
+
+// Every other page is loaded on demand (code-split) instead of being bundled
+// into the initial download — this is what actually fixes the "keeps
+// loading for a long time" issue: previously the whole app (~570KB gzipped)
+// downloaded before ANY page could render, even if you only wanted one tab.
+const Dashboard          = lazy(() => import('./pages/Dashboard'));
+const IncomePage         = lazy(() => import('./pages/IncomePage'));
+const ExpensesPage       = lazy(() => import('./pages/ExpensesPage'));
+const PortfolioPage      = lazy(() => import('./pages/PortfolioPage'));
+const NetWorthPage       = lazy(() => import('./pages/NetWorthPage'));
+const LoanCalculatorPage = lazy(() => import('./pages/LoanCalculatorPage'));
+const SettingsPage       = lazy(() => import('./pages/SettingsPage'));
+const InsurancePage      = lazy(() => import('./pages/InsurancePage'));
+const BudgetPage         = lazy(() => import('./pages/BudgetPage'));
+const AgriculturePage    = lazy(() => import('./pages/AgriculturePage'));
+const ChangelogPage      = lazy(() => import('./pages/ChangelogPage'));
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="spin-center full"><div className="spin spin-lg" /></div>;
   return user ? children : <Navigate to="/auth" />;
+}
+
+function PageLoader() {
+  return <div className="spin-center full"><div className="spin spin-lg" /></div>;
 }
 
 function App() {
@@ -38,22 +45,24 @@ function App() {
             <Route path="/*" element={
               <Protected>
                 <Layout>
-                  <Routes>
-                    <Route path="/" element={<Dashboard />} />
-                    <Route path="/income" element={<IncomePage />} />
-                    <Route path="/expenses" element={<ExpensesPage />} />
-                    <Route path="/portfolio" element={<PortfolioPage />} />
-                    <Route path="/networth" element={<NetWorthPage />} />
-                    <Route path="/loans" element={<LoanCalculatorPage />} />
-                    <Route path="/reports" element={<ReportsPage />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/insurance" element={<InsurancePage />} />
-                    <Route path="/goals" element={<GoalsPage />} />
-                    <Route path="/cards" element={<CardsPage />} />
-                    <Route path="/banking" element={<BankingPage />} />
-                    <Route path="/budget"  element={<BudgetPage />} />
-                    <Route path="/changelog" element={<ChangelogPage />} />
-                  </Routes>
+                  <Suspense fallback={<PageLoader />}>
+                    <Routes>
+                      <Route path="/" element={<Dashboard />} />
+                      <Route path="/income" element={<IncomePage />} />
+                      <Route path="/expenses" element={<ExpensesPage />} />
+                      <Route path="/portfolio" element={<PortfolioPage />} />
+                      <Route path="/networth" element={<NetWorthPage />} />
+                      <Route path="/loans" element={<LoanCalculatorPage />} />
+                      <Route path="/settings" element={<SettingsPage />} />
+                      <Route path="/insurance" element={<InsurancePage />} />
+                      <Route path="/budget" element={<BudgetPage />} />
+                      <Route path="/agriculture" element={<AgriculturePage />} />
+                      <Route path="/changelog" element={<ChangelogPage />} />
+                      {/* Removed: /reports, /goals, /cards, /banking — see
+                          finboom project notes for what moved where. */}
+                      <Route path="*" element={<Navigate to="/" />} />
+                    </Routes>
+                  </Suspense>
                 </Layout>
               </Protected>
             } />

@@ -106,6 +106,105 @@ export const expenseService = {
 };
 
 // ─── INVESTMENTS / STOCKS ──────────────────────────────────
+// ─── INVESTMENT SUMMARY CACHE ──────────────────────────────
+// Portfolio's overview (totals, allocation %, pie chart, stock-wise
+// summary) used to be computed by fetching EVERY transaction ever entered
+// and aggregating client-side — that scales badly as history grows, since
+// it's a full-collection read on every page load regardless of how many
+// distinct stocks you actually hold.
+//
+// This keeps one small rollup document PER SYMBOL (deterministic ID
+// `${uid}_${symbol}`, so concurrent writes converge instead of creating
+// duplicates), recomputed automatically whenever a transaction for that
+// symbol is created/updated/deleted. Reading N summary docs (one per
+// distinct stock) is far cheaper than reading N transactions (one per
+// buy), and the difference grows every time you add another purchase.
+const summaryDocId = (symbol) => `${uid()}_${(symbol || '').toUpperCase().trim()}`;
+
+export const investmentSummaryService = {
+  async getAll() {
+    const q = query(collection(db, 'investmentSummaries'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  // Recomputes ONE symbol's rollup from its own transactions only — cheap
+  // regardless of total portfolio size, since it's filtered to one symbol.
+  async recompute(symbol) {
+    if (!symbol) return;
+    const u = uid(); if (!u) return;
+    try {
+      const q = query(collection(db, 'investments'), where('userId', '==', u), where('symbol', '==', symbol));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        // No transactions left for this symbol — remove its stale summary
+        try { await deleteDoc(doc(db, 'investmentSummaries', summaryDocId(symbol))); } catch {}
+        return;
+      }
+      let quantity = 0, invested = 0, currentValue = 0, stockName = '', latestDate = null;
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const qty = parseFloat(data.quantity) || 0;
+        const price = parseFloat(data.purchasePrice) || 0;
+        const cur = parseFloat(data.currentPrice) || price;
+        quantity += qty;
+        invested += qty * price;
+        currentValue += qty * cur;
+        stockName = data.stockName || stockName;
+        const pd = toDate(data.purchaseDate);
+        if (!latestDate || pd > latestDate) latestDate = pd;
+      });
+      await setDoc(doc(db, 'investmentSummaries', summaryDocId(symbol)), {
+        userId: u, symbol, stockName, quantity, invested, currentValue,
+        avgPrice: quantity > 0 ? invested / quantity : 0,
+        currentPrice: quantity > 0 ? currentValue / quantity : 0,
+        transactionCount: snap.size,
+        latestPurchaseDate: latestDate ? latestDate.toISOString() : null,
+        updatedAt: Timestamp.now(),
+      });
+    } catch (err) { console.error('investmentSummaryService.recompute failed for', symbol, err); }
+  },
+  // One-time (or re-runnable) backfill: rebuilds every symbol's summary
+  // from scratch by reading the full transaction history once. Needed
+  // once for data that existed before this cache existed, and safe to
+  // run again anytime the cache is suspected stale.
+  async rebuildAll() {
+    const u = uid(); if (!u) return { symbols: 0, transactions: 0, summaries: [] };
+    const snap = await getDocs(query(collection(db, 'investments'), where('userId', '==', u)));
+    const bySymbol = {};
+    snap.docs.forEach(d => {
+      const data = d.data();
+      const sym = data.symbol || data.stockName;
+      if (!sym) return;
+      (bySymbol[sym] = bySymbol[sym] || []).push(data);
+    });
+    const summaries = [];
+    for (const sym of Object.keys(bySymbol)) {
+      const txns = bySymbol[sym];
+      let quantity = 0, invested = 0, currentValue = 0, stockName = '', latestDate = null;
+      txns.forEach(data => {
+        const qty = parseFloat(data.quantity) || 0;
+        const price = parseFloat(data.purchasePrice) || 0;
+        const cur = parseFloat(data.currentPrice) || price;
+        quantity += qty; invested += qty * price; currentValue += qty * cur;
+        stockName = data.stockName || stockName;
+        const pd = toDate(data.purchaseDate);
+        if (!latestDate || pd > latestDate) latestDate = pd;
+      });
+      const summaryDoc = {
+        userId: u, symbol: sym, stockName, quantity, invested, currentValue,
+        avgPrice: quantity > 0 ? invested / quantity : 0,
+        currentPrice: quantity > 0 ? currentValue / quantity : 0,
+        transactionCount: txns.length,
+        latestPurchaseDate: latestDate ? latestDate.toISOString() : null,
+        updatedAt: Timestamp.now(),
+      };
+      await setDoc(doc(db, 'investmentSummaries', summaryDocId(sym)), summaryDoc);
+      summaries.push({ id: summaryDocId(sym), ...summaryDoc });
+    }
+    return { symbols: Object.keys(bySymbol).length, transactions: snap.size, summaries };
+  },
+};
+
 export const investmentService = {
   async getAll() {
     const q = query(collection(db, 'investments'), where('userId', '==', uid()), orderBy('purchaseDate', 'desc'));
@@ -119,18 +218,31 @@ export const investmentService = {
     const totalPortfolio = items.reduce((s, i) => s + i.currentValue, 0);
     return items.map(i => ({ ...i, allocation: totalPortfolio > 0 ? ((i.currentValue / totalPortfolio) * 100).toFixed(1) : '0' }));
   },
-  async create(data) { return addDoc(collection(db, 'investments'), { ...data, userId: uid(), purchaseDate: Timestamp.fromDate(new Date(data.purchaseDate)), createdAt: Timestamp.now() }); },
+  async create(data) {
+    const ref = await addDoc(collection(db, 'investments'), { ...data, userId: uid(), purchaseDate: Timestamp.fromDate(new Date(data.purchaseDate)), createdAt: Timestamp.now() });
+    await investmentSummaryService.recompute(data.symbol); // awaited so an immediate refresh sees the updated total, not a stale one
+    return ref;
+  },
   async update(id, data) {
     const { id: _id, totalInvested, currentValue, profitLoss, profitLossPct, allocation, ...cleanData } = data;
-    return updateDoc(doc(db, 'investments', id), {
+    const result = await updateDoc(doc(db, 'investments', id), {
       ...cleanData,
-      purchaseDate: Timestamp.fromDate(new Date(cleanData.purchaseDate)),
+      purchaseDate: Timestamp.fromDate(toDate(cleanData.purchaseDate)),
       currentPrice: parseFloat(cleanData.currentPrice) || parseFloat(cleanData.purchasePrice) || 0,
       quantity: parseFloat(cleanData.quantity) || 0,
       purchasePrice: parseFloat(cleanData.purchasePrice) || 0,
     });
+    await investmentSummaryService.recompute(cleanData.symbol);
+    return result;
   },
-  async delete(id) { return deleteDoc(doc(db, 'investments', id)); }
+  async delete(id) {
+    // Need the symbol BEFORE deleting, so we know which summary to recompute afterward
+    let symbol = null;
+    try { const snap = await getDoc(doc(db, 'investments', id)); if (snap.exists()) symbol = snap.data().symbol; } catch {}
+    const result = await deleteDoc(doc(db, 'investments', id));
+    if (symbol) await investmentSummaryService.recompute(symbol);
+    return result;
+  }
 };
 
 // ─── NET WORTH (Assets & Liabilities) ─────────────────────
@@ -427,6 +539,40 @@ const DEFAULT_BROKERS = [
 ];
 
 // ─── RECURRING EXPENSES ───────────────────────────────────
+// ─── INSURANCE ───────────────────────────────────────────
+// Moved here (from InsurancePage.js) so the Recurring tab can also read/
+// update insurance policies, for the Recurring ↔ Insurance sync feature.
+export const insuranceService = {
+  async getAll() {
+    const q = query(collection(db, 'insurance'), where('userId', '==', uid()));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({
+      id: d.id, ...d.data(),
+      startDate: d.data().startDate?.toDate?.() || new Date(d.data().startDate),
+      dueDate: d.data().dueDate?.toDate?.() || new Date(d.data().dueDate),
+      maturityDate: d.data().maturityDate ? (d.data().maturityDate?.toDate?.() || new Date(d.data().maturityDate)) : null,
+    }));
+  },
+  async create(data) {
+    return addDoc(collection(db, 'insurance'), {
+      ...data, userId: uid(),
+      startDate: Timestamp.fromDate(new Date(data.startDate)),
+      dueDate: Timestamp.fromDate(new Date(data.dueDate)),
+      maturityDate: data.maturityDate ? Timestamp.fromDate(new Date(data.maturityDate)) : null,
+      createdAt: Timestamp.now()
+    });
+  },
+  async update(id, data) {
+    return updateDoc(doc(db, 'insurance', id), {
+      ...data,
+      startDate: Timestamp.fromDate(new Date(data.startDate)),
+      dueDate: Timestamp.fromDate(new Date(data.dueDate)),
+      maturityDate: data.maturityDate ? Timestamp.fromDate(new Date(data.maturityDate)) : null,
+    });
+  },
+  async delete(id) { return deleteDoc(doc(db, 'insurance', id)); }
+};
+
 export const recurringService = {
   async getAll() {
     const q = query(collection(db, 'recurring'), where('userId', '==', uid()));
@@ -436,18 +582,6 @@ export const recurringService = {
   async create(data) { return addDoc(collection(db, 'recurring'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
   async update(id, data) { return updateDoc(doc(db, 'recurring', id), data); },
   async delete(id) { return deleteDoc(doc(db, 'recurring', id)); }
-};
-
-// ─── FINANCIAL GOALS ─────────────────────────────────────
-export const goalsService = {
-  async getAll() {
-    const q = query(collection(db, 'goals'), where('userId', '==', uid()));
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  },
-  async create(data) { return addDoc(collection(db, 'goals'), { ...data, userId: uid(), createdAt: Timestamp.now() }); },
-  async update(id, data) { return updateDoc(doc(db, 'goals', id), data); },
-  async delete(id) { return deleteDoc(doc(db, 'goals', id)); }
 };
 
 export const brokerService = {

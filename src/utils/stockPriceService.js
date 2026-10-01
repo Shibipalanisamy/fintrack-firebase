@@ -38,11 +38,16 @@ export async function fetchLivePrices(symbols) {
   if (uncached.length === 0) return results;
 
   // Call Google Apps Script Web App
-  const url = `${APPS_SCRIPT_URL}?symbols=${uncached.join(',')}`;
+  const url = `${APPS_SCRIPT_URL}?symbols=${encodeURIComponent(uncached.join(','))}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`Apps Script returned ${res.status}`);
 
-  const json = await res.json();
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    throw new Error('Apps Script did not return valid JSON — check deployment access is set to "Anyone" and that the URL is correct.');
+  }
   if (!json.success) throw new Error(json.error || 'Apps Script error');
 
   Object.entries(json.prices || {}).forEach(([sym, data]) => {

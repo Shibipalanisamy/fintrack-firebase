@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { investmentService, stockMasterService, dividendService, brokerService, pinService } from '../utils/dbService';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { investmentService, investmentSummaryService, stockMasterService, dividendService, brokerService, pinService } from '../utils/dbService';
 import { fmt, fmtDate, fmtDateInput, today, exportCSV, importCSV, PALETTE } from '../utils/helpers';
 import { fetchLivePrices, setAppsScriptUrl } from '../utils/stockPriceService';
 import { Modal, ConfirmDelete, DateStepper } from '../components/UI';
@@ -9,6 +9,9 @@ import { db, auth } from '../utils/firebase';
 import { collection, query, where, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
 import ContractUploader, { SOURCES } from './ContractUploader';
 import ECASAnalyzer from './ECASAnalyzer';
+
+// Loaded on demand — its code isn't downloaded until the 52W tab is actually clicked
+const PriceAnalysisTab = lazy(() => import('./PriceAnalysisTab'));
 
 // Broker sources supported by ContractUploader
 //const SOURCES = ['Mstock', 'Aionion'];
@@ -70,7 +73,7 @@ function BrokerDropdown({ brokers, value, onChange }) {
 }
 
 // ─── Investment Form ───────────────────────────────────────
-function InvForm({ item, stocks, brokers, banks, onSave, onSaveAndAnother, onClose }) {
+function InvForm({ item, stocks, brokers, banks, existingItems, onSave, onSaveAndAnother, onClose }) {
   const defaultBank = banks?.find(b => b.name.toLowerCase().includes('idfc'))?.name || banks?.[0]?.name || '';
   const BLANK = { purchaseDate: today(), stockName: '', symbol: '', quantity: '', purchasePrice: '', currentPrice: '', brokerName: '', brokerage: '', bankAccount: defaultBank };
   const [f, setF] = useState({
@@ -106,6 +109,27 @@ function InvForm({ item, stocks, brokers, banks, onSave, onSaveAndAnother, onClo
   };
 
   const handleStockSelect = (stock) => setF(p => ({ ...p, symbol: stock.symbol, stockName: stock.name }));
+
+  // Live duplicate warning — same fingerprint logic as the Holdings tab's
+  // duplicate finder (symbol + broker + date + qty + price). Only checks
+  // OTHER records (excludes the one currently being edited).
+  const possibleDuplicate = (() => {
+    if (!existingItems || !f.symbol || !f.quantity || !f.purchasePrice) return null;
+    const sym = f.symbol.toUpperCase().trim();
+    const broker = (f.brokerName || '').toUpperCase().trim();
+    const date = f.purchaseDate;
+    const qty = Math.round((parseFloat(f.quantity) || 0) * 100) / 100;
+    const price = Math.round((parseFloat(f.purchasePrice) || 0) * 100) / 100;
+    return existingItems.find(i => {
+      if (item && i.id === item.id) return false; // don't flag the record being edited against itself
+      const iSym = (i.symbol || i.stockName || '').toUpperCase().trim();
+      const iBroker = (i.brokerName || '').toUpperCase().trim();
+      const iDate = fmtDateInput(i.purchaseDate);
+      const iQty = Math.round((+i.quantity || 0) * 100) / 100;
+      const iPrice = Math.round((+i.purchasePrice || 0) * 100) / 100;
+      return iSym === sym && iBroker === broker && iDate === date && iQty === qty && iPrice === price;
+    }) || null;
+  })();
 
   const validate = () => {
     if (!f.symbol) { toast.error('Select a Symbol'); return false; }
@@ -248,6 +272,17 @@ function InvForm({ item, stocks, brokers, banks, onSave, onSaveAndAnother, onClo
               <span className={`fw-700 ${parseFloat(f.currentPrice) >= parseFloat(f.purchasePrice) ? 'amt-g' : 'amt-r'}`}>{fmt((parseFloat(f.quantity) || 0) * parseFloat(f.currentPrice))}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {possibleDuplicate && (
+        <div style={{ background: 'var(--red-soft, rgba(244,63,94,.1))', border: '1px solid var(--red, #f43f5e)', borderRadius: 10, padding: '10px 12px', marginTop: 10, fontSize: 12 }}>
+          <div style={{ fontWeight: 800, color: 'var(--red, #f43f5e)', marginBottom: 2 }}>⚠️ This looks like a duplicate</div>
+          <div className="text-muted">
+            An existing entry already matches this symbol, broker, date, quantity &amp; price
+            {possibleDuplicate.createdAt ? ` (added ${fmtDate(possibleDuplicate.createdAt)})` : ''}.
+            You can still save if this is genuinely a separate trade — otherwise Cancel and check the Holdings tab.
+          </div>
         </div>
       )}
 
@@ -521,118 +556,6 @@ function BrokerReportTab({ items, brokers }) {
   );
 }
 
-// ─── 52-Week Analysis Tab ──────────────────────────────────
-function PriceAnalysisTab({ items }) {
-  const [search, setSearch] = useState('');
-  const [checked, setChecked] = useState(new Set());
-
-  const stockMap = {};
-  items.forEach(i => {
-    const sym = i.symbol || i.stockName;
-    if (!stockMap[sym]) stockMap[sym] = { symbol: i.symbol, name: i.stockName, prices: [], quantities: 0, currentPrice: 0 };
-    stockMap[sym].prices.push({ price: i.purchasePrice, date: new Date(i.purchaseDate) });
-    stockMap[sym].quantities += i.quantity;
-    if (i.currentPrice > stockMap[sym].currentPrice) stockMap[sym].currentPrice = i.currentPrice;
-  });
-  const now = new Date();
-  const oneYearAgo = new Date(now); oneYearAgo.setFullYear(now.getFullYear() - 1);
-  const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30);
-  const allRows = Object.entries(stockMap).map(([sym, d]) => {
-    const yearPrices = d.prices.filter(p => p.date >= oneYearAgo).map(p => p.price);
-    const month30Prices = d.prices.filter(p => p.date >= thirtyDaysAgo).map(p => p.price);
-    const allPrices = d.prices.map(p => p.price);
-    const w52High = yearPrices.length > 0 ? Math.max(...yearPrices) : null;
-    const w52Low = yearPrices.length > 0 ? Math.min(...yearPrices) : null;
-    const d30High = month30Prices.length > 0 ? Math.max(...month30Prices) : null;
-    const d30Low = month30Prices.length > 0 ? Math.min(...month30Prices) : null;
-    const avgBuy = allPrices.reduce((s, p) => s + p, 0) / allPrices.length;
-    const cur = d.currentPrice || avgBuy;
-    return { sym, name: d.name, qty: d.quantities, avgBuy, cur, w52High, w52Low, d30High, d30Low, pctFromLow: w52Low ? (((cur - w52Low) / w52Low) * 100).toFixed(1) : null, pctFromHigh: w52High ? (((cur - w52High) / w52High) * 100).toFixed(1) : null, buyCount: d.prices.length };
-  });
-
-  // Filter by search
-  const searchFiltered = allRows.filter(r => !search || r.sym.toLowerCase().includes(search.toLowerCase()) || r.name.toLowerCase().includes(search.toLowerCase()));
-  // If any checked, show only checked; else show all search results
-  const rows = checked.size > 0 ? searchFiltered.filter(r => checked.has(r.sym)) : searchFiltered;
-
-  const toggleCheck = sym => setChecked(s => { const n = new Set(s); n.has(sym) ? n.delete(sym) : n.add(sym); return n; });
-  const clearChecked = () => setChecked(new Set());
-
-  if (items.length === 0) return <div className="card"><div className="empty"><div className="empty-icon">📊</div><div className="empty-title">No data</div></div></div>;
-
-  return (
-    <div>
-      {/* Search + checkbox filter */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg2)', border: '1px solid var(--border2)', borderRadius: 8, padding: '6px 12px', flex: 1, minWidth: 200 }}>
-          <span>🔍</span>
-          <input style={{ background: 'none', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 13, flex: 1 }} placeholder="Search symbol or name..." value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: 'var(--t3)', cursor: 'pointer' }}>✕</button>}
-        </div>
-        {checked.size > 0 && <button className="btn btn-secondary btn-sm" onClick={clearChecked}>✕ Clear {checked.size} selected</button>}
-        <span className="fs-12 text-muted">{rows.length} of {allRows.length} stocks</span>
-      </div>
-
-      {/* Stock checkbox chips */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
-        {searchFiltered.map(r => (
-          <button key={r.sym} type="button" onClick={() => toggleCheck(r.sym)}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, border: `1.5px solid ${checked.has(r.sym) ? 'var(--blue)' : 'var(--border2)'}`, background: checked.has(r.sym) ? 'rgba(77,158,255,.15)' : 'var(--bg3)', cursor: 'pointer', fontSize: 12, fontWeight: 700, color: checked.has(r.sym) ? 'var(--blue)' : 'var(--t2)', fontFamily: 'monospace' }}>
-            <span style={{ width: 13, height: 13, borderRadius: 3, border: `2px solid ${checked.has(r.sym) ? 'var(--blue)' : 'var(--border2)'}`, background: checked.has(r.sym) ? 'var(--blue)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              {checked.has(r.sym) && <span style={{ color: '#fff', fontSize: 9, fontWeight: 900 }}>✓</span>}
-            </span>
-            {r.sym}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ background: 'rgba(77,158,255,.06)', border: '1px solid rgba(77,158,255,.2)', borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12 }}>
-        ℹ️ 52W and 30D High/Low are calculated from your actual <strong>buy price history</strong> in this app. Update current price (✏️) on Holdings tab for accurate P&L.
-      </div>
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead><tr><th>Symbol</th><th>Name</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Avg Buy</th><th style={{ textAlign: 'right' }}>Current</th><th style={{ textAlign: 'center', background: 'rgba(34,197,94,.08)' }}>52W High</th><th style={{ textAlign: 'center', background: 'rgba(244,63,94,.08)' }}>52W Low</th><th style={{ textAlign: 'center', background: 'rgba(251,191,36,.08)' }}>30D High</th><th style={{ textAlign: 'center', background: 'rgba(251,191,36,.08)' }}>30D Low</th><th style={{ textAlign: 'center' }}>vs 52W Low</th><th style={{ textAlign: 'center' }}>vs 52W High</th></tr></thead>
-          <tbody>{rows.map(r => (
-            <tr key={r.sym}>
-              <td><span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 13, background: 'var(--bg3)', padding: '3px 8px', borderRadius: 6, color: 'var(--blue)' }}>{r.sym}</span></td>
-              <td className="fw-600 fs-12">{r.name}</td>
-              <td style={{ textAlign: 'right' }} className="font-mono fs-12">{r.qty}</td>
-              <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(r.avgBuy)}</td>
-              <td style={{ textAlign: 'right' }}><span className={`font-mono fs-12 fw-700 ${r.cur > r.avgBuy ? 'amt-g' : 'amt-r'}`}>{fmt(r.cur)}</span></td>
-              <td style={{ textAlign: 'center', background: 'rgba(34,197,94,.04)' }}>{r.w52High !== null ? <span className="fw-700 fs-12 amt-g">{fmt(r.w52High)}</span> : <span className="text-muted fs-11">—</span>}</td>
-              <td style={{ textAlign: 'center', background: 'rgba(244,63,94,.04)' }}>{r.w52Low !== null ? <span className="fw-700 fs-12 amt-r">{fmt(r.w52Low)}</span> : <span className="text-muted fs-11">—</span>}</td>
-              <td style={{ textAlign: 'center', background: 'rgba(251,191,36,.04)' }}>{r.d30High !== null ? <span className="fw-700 fs-12" style={{ color: '#f59e0b' }}>{fmt(r.d30High)}</span> : <span className="text-muted fs-11">—</span>}</td>
-              <td style={{ textAlign: 'center', background: 'rgba(251,191,36,.04)' }}>{r.d30Low !== null ? <span className="fw-700 fs-12" style={{ color: '#d97706' }}>{fmt(r.d30Low)}</span> : <span className="text-muted fs-11">—</span>}</td>
-              <td style={{ textAlign: 'center' }}>{r.pctFromLow !== null ? <span style={{ background: parseFloat(r.pctFromLow) >= 0 ? 'rgba(34,197,94,.15)' : 'rgba(244,63,94,.15)', color: parseFloat(r.pctFromLow) >= 0 ? 'var(--green)' : 'var(--red)', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{r.pctFromLow >= 0 ? '+' : ''}{r.pctFromLow}%</span> : '—'}</td>
-              <td style={{ textAlign: 'center' }}>{r.pctFromHigh !== null ? <span style={{ background: parseFloat(r.pctFromHigh) >= 0 ? 'rgba(34,197,94,.15)' : 'rgba(244,63,94,.15)', color: parseFloat(r.pctFromHigh) >= 0 ? 'var(--green)' : 'var(--red)', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{parseFloat(r.pctFromHigh) >= 0 ? '+' : ''}{r.pctFromHigh}%</span> : '—'}</td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-title">📊 Buy Price Range Visual</div>
-        <div style={{ display: 'grid', gap: 14 }}>
-          {rows.filter(r => r.w52Low !== null && r.w52High !== null && r.w52Low !== r.w52High).map(r => {
-            const range = r.w52High - r.w52Low;
-            const curPct = Math.min(100, Math.max(0, ((r.cur - r.w52Low) / range) * 100));
-            const avgPct = Math.min(100, Math.max(0, ((r.avgBuy - r.w52Low) / range) * 100));
-            return (
-              <div key={r.sym}>
-                <div className="flex justify-between mb-1"><span className="fs-13 fw-700">{r.sym} <span className="text-muted fs-11 fw-400">{r.name}</span></span><span className="fs-12 text-muted">{fmt(r.w52Low)} — {fmt(r.w52High)}</span></div>
-                <div style={{ position: 'relative', height: 20, background: 'linear-gradient(to right, rgba(244,63,94,.2), rgba(34,197,94,.2))', borderRadius: 10 }}>
-                  <div style={{ position: 'absolute', left: `${curPct}%`, top: '50%', transform: 'translate(-50%,-50%)', width: 12, height: 12, borderRadius: '50%', background: 'var(--blue)', border: '2px solid #fff', zIndex: 2 }} />
-                  <div style={{ position: 'absolute', left: `${avgPct}%`, top: 0, bottom: 0, width: 2, background: '#fbbf24', zIndex: 1 }} />
-                </div>
-                <div className="flex justify-between fs-10 text-muted mt-1"><span>52W Low: {fmt(r.w52Low)}</span><span>🔵 Current · 🟡 Avg Buy</span><span>52W High: {fmt(r.w52High)}</span></div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Holding Symbol Picker (like SymbolDropdown) ───────────
 function HoldingSymbolPicker({ symbols, selected, onSelect }) {
   const [q, setQ] = useState('');
@@ -750,6 +673,27 @@ function DividendTab({ items, stocks, banks }) {
   const handleDivSymbolSelect = (stock) => {
     const h = items.find(i => i.symbol === stock.symbol);
     setForm(p => ({ ...p, symbol: stock.symbol, stockName: stock.name, shares: h ? String(h.quantity) : p.shares, totalAmount: h && p.dividendPerShare ? String((h.quantity * parseFloat(p.dividendPerShare)).toFixed(2)) : p.totalAmount }));
+  };
+
+  // Sums quantity across every purchase of this symbol made ON OR BEFORE the
+  // given record date — this is what a dividend actually pays out on, NOT
+  // your current total holding (which may include shares bought after the
+  // record date).
+  const sharesAsOfDate = (symbol, dateStr) => {
+    if (!symbol || !dateStr) return 0;
+    const cutoff = new Date(dateStr);
+    return items
+      .filter(i => (i.symbol === symbol || i.stockName === symbol) && new Date(i.purchaseDate) <= cutoff)
+      .reduce((s, i) => s + (+i.quantity || 0), 0);
+  };
+
+  const calcSharesAsOfRecordDate = () => {
+    if (!form.symbol) { toast.error('Pick a stock symbol first'); return; }
+    if (!form.date) { toast.error('Set the record date first'); return; }
+    const shares = sharesAsOfDate(form.symbol, form.date);
+    if (shares === 0) { toast.error(`No purchases of ${form.symbol} found on or before ${form.date}`); return; }
+    handleSharesOrDPS('shares', String(shares));
+    toast.success(`${shares} shares held as of ${fmtDate(form.date)}`);
   };
   const save = async () => {
     if (!form.symbol || !form.dividendPerShare) { toast.error('Fill symbol and dividend per share'); return; }
@@ -1199,10 +1143,10 @@ function DividendTab({ items, stocks, banks }) {
 
       {modal && (
         <Modal title={edit ? '✏️ Edit Dividend' : '💸 Add Dividend'} onClose={() => { setModal(false); setEdit(null); }}>
-          <div className="fg"><label className="fl">Date</label><DateStepper name="date" value={form.date} onChange={ch} /></div>
+          <div className="fg"><label className="fl">Record Date <span className="text-muted" style={{ fontWeight: 400, textTransform: 'none' }}>(shareholding cutoff for this dividend)</span></label><DateStepper name="date" value={form.date} onChange={ch} /></div>
           {holdingSymbols.length > 0 && <div className="fg"><label className="fl">Quick Pick <span className="text-muted fs-11">(holdings + stock master)</span></label><HoldingSymbolPicker symbols={holdingSymbols} selected={form.symbol} onSelect={handlePickStock} /></div>}
           <div className="frow"><div className="fg"><label className="fl">Symbol {form.stockName && <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600 }}>✓ {form.stockName}</span>}</label><SymbolDropdown stocks={stocks} value={form.symbol} onChange={val => setForm(p => ({ ...p, symbol: val }))} onSelect={handleDivSymbolSelect} /></div><div className="fg"><label className="fl">Stock Name</label><input className="fi" name="stockName" value={form.stockName} onChange={ch} placeholder="Auto-filled" /></div></div>
-          <div className="frow"><div className="fg"><label className="fl">No. of Shares</label><input className="fi" type="number" name="shares" value={form.shares} onChange={e => handleSharesOrDPS('shares', e.target.value)} placeholder="e.g. 100" /></div><div className="fg"><label className="fl">Dividend/Share (Rs)</label><input className="fi" type="number" name="dividendPerShare" value={form.dividendPerShare} onChange={e => handleSharesOrDPS('dividendPerShare', e.target.value)} step="0.01" required /></div></div>
+          <div className="frow"><div className="fg"><label className="fl">No. of Shares <button type="button" onClick={calcSharesAsOfRecordDate} style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 12, border: '1px solid var(--blue)', background: 'rgba(77,158,255,.1)', color: 'var(--blue)', cursor: 'pointer' }}>📅 Calc as of Record Date</button></label><input className="fi" type="number" name="shares" value={form.shares} onChange={e => handleSharesOrDPS('shares', e.target.value)} placeholder="e.g. 100" /></div><div className="fg"><label className="fl">Dividend/Share (Rs)</label><input className="fi" type="number" name="dividendPerShare" value={form.dividendPerShare} onChange={e => handleSharesOrDPS('dividendPerShare', e.target.value)} step="0.01" required /></div></div>
           <div className="fg"><label className="fl">Total Amount (Rs) <span style={{ color: 'var(--green)', fontSize: 11 }}>auto-calc</span></label><div style={{ position: 'relative' }}><span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--t3)' }}>Rs</span><input className="fi" type="number" name="totalAmount" value={form.totalAmount} onChange={ch} style={{ paddingLeft: 28, fontWeight: 700 }} /></div>{form.shares && form.dividendPerShare && <div className="fs-11 amt-g mt-1">= {form.shares} × Rs {form.dividendPerShare} = Rs {(parseFloat(form.shares) * parseFloat(form.dividendPerShare)).toFixed(2)}</div>}</div>
           {banks && banks.length > 0 && (
             <div className="fg">
@@ -1577,7 +1521,6 @@ function HoldingsTab({ items, brokers, getBrokerColor, getBrokerIcon, onEdit, on
   );
 }
 
-// ─── Password Lock Screen ──────────────────────────────────
 function LockedScreen({ page, onUnlock }) {
   const [input, setInput] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -1662,6 +1605,228 @@ function LockedScreen({ page, onUnlock }) {
 }
 
 // ─── Main Portfolio Page ───────────────────────────────────
+// ─── Reconcile Holdings ──────────────────────────────────────
+// Paste the actual per-symbol totals from your broker's own portal (Angel
+// One, mStock, etc.) and compare them against what's already summed up in
+// this app for that broker. For any symbol where they don't match, this
+// creates ONE adjustment entry (dated whatever you choose) whose quantity
+// and price are exactly the shortfall/excess — so after it's added, your
+// app's totals per symbol match the broker's portal totals exactly.
+function ReconcileTab({ items, brokers, onSaved }) {
+  const [broker, setBroker] = useState('');
+  const [reconcileDate, setReconcileDate] = useState('2024-12-31');
+  const [pasted, setPasted] = useState('');
+  const [rows, setRows] = useState(null); // parsed + computed rows, or null before parsing
+  const [saving, setSaving] = useState(false);
+
+  // Keep the selected broker valid as the brokers list loads/changes —
+  // brokers is fetched asynchronously by the parent, so it can still be []
+  // at the moment this component first mounts. Without this, `broker`
+  // would get permanently stuck at '' even though the dropdown visually
+  // shows a broker selected (browsers default to showing the first option
+  // when the bound value doesn't match anything) — which silently broke
+  // the broker filter below.
+  useEffect(() => {
+    if (brokers.length === 0) return;
+    if (!broker || !brokers.some(b => b.name === broker)) {
+      setBroker(brokers[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brokers]);
+
+  const brokerMatches = (name) => (name || '').trim().toLowerCase() === broker.trim().toLowerCase();
+  // Live sanity-check count so it's visible in the UI that the broker filter is actually doing something
+  const matchedRecordCount = items.filter(i => brokerMatches(i.brokerName)).length;
+
+  // Splits a pasted spreadsheet block into columns — tab-separated (the
+  // normal case when pasting from Excel/Sheets/a table) with a fallback to
+  // runs of 2+ spaces for plain-text-table pastes.
+  const splitCols = (line) => {
+    if (line.includes('\t')) return line.split('\t').map(c => c.trim());
+    return line.trim().split(/\s{2,}/).map(c => c.trim());
+  };
+
+  const parseAndCompute = () => {
+    if (!broker) { toast.error('Select a broker first'); return; }
+    const lines = pasted.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) { toast.error('Paste your actual holdings table first'); return; }
+
+    // Skip a header row if the first line looks like one (contains "Symbol" or "Qty")
+    const startIdx = /symbol|qty|invested/i.test(lines[0]) ? 1 : 0;
+
+    const parsedRows = [];
+    for (let i = startIdx; i < lines.length; i++) {
+      const cols = splitCols(lines[i]);
+      if (cols.length < 4) continue; // skip malformed lines
+      // Expected columns: Symbol, Stock Name, Total Qty, Total Invested, Avg Buy Price (last is optional/derivable)
+      const symbol = cols[0].toUpperCase().trim();
+      const stockName = cols[1] || symbol;
+      const actualQty = parseFloat(String(cols[2]).replace(/,/g, '')) || 0;
+      const actualInvested = parseFloat(String(cols[3]).replace(/,/g, '')) || 0;
+      if (!symbol || actualQty <= 0) continue;
+      parsedRows.push({ symbol, stockName, actualQty, actualInvested });
+    }
+    if (parsedRows.length === 0) { toast.error('Could not parse any rows — check the pasted format'); return; }
+
+    // Current per-symbol totals in the DB, for the selected broker only
+    // (trimmed + case-insensitive match — see brokerMatches above)
+    const currentTotals = {};
+    items.filter(i => brokerMatches(i.brokerName)).forEach(i => {
+      const sym = (i.symbol || i.stockName || '').toUpperCase().trim();
+      if (!currentTotals[sym]) currentTotals[sym] = { qty: 0, invested: 0 };
+      currentTotals[sym].qty += (+i.quantity || 0);
+      currentTotals[sym].invested += (+i.quantity || 0) * (+i.purchasePrice || 0);
+    });
+
+    const computed = parsedRows.map(r => {
+      const cur = currentTotals[r.symbol] || { qty: 0, invested: 0 };
+      const diffQty = Math.round((r.actualQty - cur.qty) * 1000) / 1000;
+      const diffInvested = Math.round((r.actualInvested - cur.invested) * 100) / 100;
+      let status, adjPrice = 0;
+      if (Math.abs(diffQty) < 0.001 && Math.abs(diffInvested) < 1) {
+        status = 'match';
+      } else if (Math.abs(diffQty) < 0.001 && Math.abs(diffInvested) >= 1) {
+        status = 'price_only'; // quantity already matches — only the invested amount differs, can't fix without a qty change
+      } else {
+        status = 'diff';
+        adjPrice = diffInvested / diffQty;
+      }
+      return { ...r, currentQty: cur.qty, currentInvested: cur.invested, diffQty, diffInvested, adjPrice, status, included: status === 'diff' };
+    });
+
+    // Symbols that exist in the DB for this broker but weren't in the pasted list at all — flagged for manual review, never auto-touched
+    const pastedSymbols = new Set(parsedRows.map(r => r.symbol));
+    const extraInDb = Object.keys(currentTotals).filter(sym => !pastedSymbols.has(sym));
+
+    setRows({ computed, extraInDb });
+  };
+
+  const toggleRow = (symbol) => {
+    setRows(prev => ({
+      ...prev,
+      computed: prev.computed.map(r => r.symbol === symbol ? { ...r, included: !r.included } : r),
+    }));
+  };
+
+  const confirmSave = async () => {
+    const toCreate = (rows?.computed || []).filter(r => r.status === 'diff' && r.included);
+    if (toCreate.length === 0) { toast.error('No adjustments selected'); return; }
+    setSaving(true);
+    try {
+      let created = 0;
+      for (const r of toCreate) {
+        await investmentService.create({
+          stockName: r.stockName,
+          symbol: r.symbol,
+          quantity: r.diffQty,
+          purchasePrice: Math.abs(r.adjPrice),
+          currentPrice: Math.abs(r.adjPrice),
+          purchaseDate: reconcileDate,
+          brokerName: broker,
+          brokerage: 0,
+          notes: `Reconciliation adjustment vs ${broker} portal — brings DB total to actual ${r.actualQty} qty / ${fmt(r.actualInvested)} invested`,
+        });
+        created++;
+      }
+      toast.success(`Created ${created} reconciliation ${created === 1 ? 'entry' : 'entries'} dated ${reconcileDate}`);
+      setRows(null); setPasted('');
+      onSaved?.();
+    } catch (err) {
+      console.error('Reconcile save failed:', err);
+      toast.error('Save failed: ' + (err?.message || 'unknown error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="fw-800 mb-2" style={{ fontSize: 15 }}>🔄 Reconcile Holdings</div>
+        <div className="fs-12 text-muted mb-3">
+          Paste the actual per-symbol totals from your broker's portal below. This compares them against what's already in your DB for the selected broker, and lets you create one adjustment entry per symbol for exactly the difference — dated whatever you choose below.
+        </div>
+        <div className="flex gap-3" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
+          <div className="fg" style={{ marginBottom: 0, minWidth: 160 }}>
+            <label className="fl">Broker</label>
+            <select className="fs" value={broker} onChange={e => setBroker(e.target.value)}>
+              {brokers.length === 0 && <option value="">Loading brokers...</option>}
+              {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+            </select>
+            {broker && <div className="fs-11 text-muted mt-1">{matchedRecordCount} record{matchedRecordCount === 1 ? '' : 's'} currently in DB for {broker}</div>}
+          </div>
+          <div className="fg" style={{ marginBottom: 0, minWidth: 160 }}>
+            <label className="fl">Adjustment Date</label>
+            <input className="fi" type="date" value={reconcileDate} onChange={e => setReconcileDate(e.target.value)} />
+          </div>
+        </div>
+        <div className="fg" style={{ marginBottom: 10 }}>
+          <label className="fl">Paste Actual Holdings (Symbol, Stock Name, Total Qty, Total Invested, Avg Buy Price)</label>
+          <textarea className="fta" rows={8} style={{ fontFamily: 'monospace', fontSize: 12 }}
+            placeholder={'Symbol\tStock Name\tTotal Qty\tTotal Invested\tAvg Buy Price\nINDUSINDBK\tIndusInd Bank Ltd\t12\t9814.49\t817.87\n...'}
+            value={pasted} onChange={e => setPasted(e.target.value)} />
+        </div>
+        <button className="btn btn-primary" onClick={parseAndCompute} disabled={!broker}>Compare</button>
+      </div>
+
+      {rows && (
+        <div className="card">
+          <div className="fw-700 fs-13 mb-3">Comparison Result</div>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{ width: 32 }}></th>
+                  <th>Symbol</th>
+                  <th style={{ textAlign: 'right' }}>DB Qty</th>
+                  <th style={{ textAlign: 'right' }}>Actual Qty</th>
+                  <th style={{ textAlign: 'right' }}>Diff Qty</th>
+                  <th style={{ textAlign: 'right' }}>DB Invested</th>
+                  <th style={{ textAlign: 'right' }}>Actual Invested</th>
+                  <th style={{ textAlign: 'right' }}>Diff Invested</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.computed.map(r => (
+                  <tr key={r.symbol} style={{ opacity: r.status === 'match' ? 0.5 : 1 }}>
+                    <td>{r.status === 'diff' && <input type="checkbox" checked={r.included} onChange={() => toggleRow(r.symbol)} />}</td>
+                    <td className="fw-700">{r.symbol}</td>
+                    <td style={{ textAlign: 'right' }} className="font-mono fs-12">{r.currentQty}</td>
+                    <td style={{ textAlign: 'right' }} className="font-mono fs-12">{r.actualQty}</td>
+                    <td style={{ textAlign: 'right' }} className={`font-mono fs-12 fw-700 ${r.diffQty > 0 ? 'amt-g' : r.diffQty < 0 ? 'amt-r' : ''}`}>{r.diffQty > 0 ? '+' : ''}{r.diffQty}</td>
+                    <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(r.currentInvested)}</td>
+                    <td style={{ textAlign: 'right' }} className="font-mono fs-12">{fmt(r.actualInvested)}</td>
+                    <td style={{ textAlign: 'right' }} className={`font-mono fs-12 fw-700 ${r.diffInvested > 0 ? 'amt-g' : r.diffInvested < 0 ? 'amt-r' : ''}`}>{r.diffInvested > 0 ? '+' : ''}{fmt(r.diffInvested)}</td>
+                    <td>
+                      {r.status === 'match' && <span className="badge badge-g">✅ Matches</span>}
+                      {r.status === 'diff' && <span className="badge badge-r">Adjust {r.diffQty > 0 ? '+' : ''}{r.diffQty} @ {fmt(Math.abs(r.adjPrice))}</span>}
+                      {r.status === 'price_only' && <span className="badge" style={{ color: 'var(--orange)' }}>⚠️ Price-only mismatch — edit manually</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {rows.extraInDb.length > 0 && (
+            <div className="fs-12" style={{ marginTop: 12, padding: 10, background: 'var(--bg3)', borderRadius: 8 }}>
+              <span className="fw-700">⚠️ In your DB for {broker} but not in the pasted list:</span> {rows.extraInDb.join(', ')} — not touched automatically; check whether these were sold or shouldn't be there.
+            </div>
+          )}
+
+          <div className="flex gap-2" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+            <button className="btn btn-primary" onClick={confirmSave} disabled={saving || rows.computed.every(r => !r.included)}>
+              {saving ? <span className="spin" /> : null} Create Adjustment Entries
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export default function PortfolioPage() {
   const [unlocked, setUnlocked] = useState(() => !pinService.getCached('portfolio'));
   const [items, setItems] = useState([]);
@@ -1675,6 +1840,7 @@ export default function PortfolioPage() {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('holdings');
   const [summarySort, setSummarySort] = useState({ field: 'value', dir: 'desc' });
+  const [summaryStockFilter, setSummaryStockFilter] = useState(''); // '' = all stocks
   const [expandedCategories, setExpandedCategories] = useState(new Set());
   const toggleSummarySort = (field) => setSummarySort(s => ({ field, dir: s.field === field && s.dir === 'desc' ? 'asc' : 'desc' }));
   const [livePrices, setLivePrices] = useState({});
@@ -1691,25 +1857,66 @@ export default function PortfolioPage() {
   const [contractSettingsLoading, setContractSettingsLoading] = useState(false);
   const [savingContractSettings,  setSavingContractSettings]  = useState(false);
 
+  // ── Summary cache (see investmentSummaryService) ────────
+  // Fast per-symbol rollup, used for the overview stats/pie chart/summary
+  // table so they render immediately, independent of the full transaction
+  // list below (which can be large and is fetched separately in the
+  // background — see load()).
+  const [summaries, setSummaries] = useState([]);
+  const [itemsLoading, setItemsLoading] = useState(true); // raw transaction list — separate from the fast summary load
+  const [rebuilding, setRebuilding] = useState(false);
+
+  const rebuildSummaryCache = async (silent = false) => {
+    setRebuilding(true);
+    try {
+      const { symbols, summaries: rebuilt } = await investmentSummaryService.rebuildAll();
+      setSummaries(rebuilt);
+      if (!silent) toast.success(`Rebuilt summary cache for ${symbols} stock${symbols === 1 ? '' : 's'}`);
+    } catch (err) {
+      console.error('rebuildSummaryCache failed:', err);
+      if (!silent) toast.error('Rebuild failed: ' + (err?.message || 'unknown error'));
+    } finally {
+      setRebuilding(false);
+    }
+  };
+
   const load = async (invalidateCache = false) => {
     setLoading(true);
     try {
-      // Fetch investments first — show the page immediately
-      const inv = await investmentService.getAll();
-      setItems(inv);
-      setLoading(false); // unblock UI as soon as investments arrive
+      // ── Fast path: summary cache only — this is what unblocks the UI.
+      // Reading one doc per distinct stock is far cheaper than reading
+      // every transaction, and only this feeds the overview stats/pie
+      // chart/stock-wise summary, so those appear almost immediately
+      // regardless of how many years of history exist underneath.
+      let sums = await investmentSummaryService.getAll();
+      if (sums.length === 0) {
+        // Either a brand-new account, or (far more likely for an existing
+        // one) the cache simply hasn't been built yet. rebuildAll() reads
+        // the full transaction history ONCE to backfill it — after this,
+        // every future load uses the fast path above instead.
+        const { summaries: rebuilt } = await investmentSummaryService.rebuildAll();
+        sums = rebuilt;
+      }
+      setSummaries(sums);
+      setLoading(false); // unblock UI as soon as the fast summary is ready
 
-      // Fetch stocks & brokers in background (cached after first load)
+      // ── Background: everything else, including the full transaction
+      // list (only needed for Holdings' detailed per-transaction table,
+      // CSV export, reconciliation, etc — not the overview stats above).
+      setItemsLoading(true);
       const u = auth.currentUser?.uid;
-      const [sm, br, bankSnap] = await Promise.all([
+      const [inv, sm, br, bankSnap] = await Promise.all([
+        investmentService.getAll(),
         stockMasterService.getAll(),
         brokerService.getAll(),
         u ? getDocs(query(collection(db, 'bankaccounts'), where('userId', '==', u))) : Promise.resolve(null),
       ]);
+      setItems(inv);
+      setItemsLoading(false);
       setStocks(sm);
       setBrokers(br);
       if (bankSnap) setBanks(bankSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name)));
-    } catch { toast.error('Failed to load'); setLoading(false); }
+    } catch { toast.error('Failed to load'); setLoading(false); setItemsLoading(false); }
   };
   useEffect(() => { load(); loadContractSettings(); }, []);
 
@@ -1761,7 +1968,7 @@ export default function PortfolioPage() {
 
   // Merge live prices into items
   const itemsWithLive = items.map(i => {
-    const lp = i.symbol ? livePrices[i.symbol] : null;
+    const lp = i.symbol ? livePrices[i.symbol.toUpperCase()] : null;
     if (!lp) return i;
     const currentPrice = lp;
     const currentValue = currentPrice * i.quantity;
@@ -1803,22 +2010,27 @@ export default function PortfolioPage() {
     try {
       let saved = 0;
       for (const item of items) {
-        const lp = item.symbol ? livePrices[item.symbol] : null;
+        const lp = item.symbol ? livePrices[item.symbol.toUpperCase()] : null;
         if (lp && lp !== item.currentPrice) {
           await investmentService.update(item.id, { ...item, currentPrice: lp });
           saved++;
         }
       }
-      toast.success(`Saved ${saved} prices to database`);
+      if (saved === 0) toast('No changes — saved prices already match live prices', { icon: 'ℹ️' });
+      else toast.success(`Saved ${saved} price${saved === 1 ? '' : 's'} to database`);
       reloadItems();
-    } catch { toast.error('Save failed'); }
+    } catch (err) {
+      console.error('saveLivePricesToDB failed:', err);
+      toast.error('Save failed: ' + (err.message || 'unknown error'));
+    }
   };
 
   // Lightweight reload — only re-fetches investments (stocks/brokers stay cached)
   const reloadItems = async () => {
     try {
-      const inv = await investmentService.getAll();
+      const [inv, sums] = await Promise.all([investmentService.getAll(), investmentSummaryService.getAll()]);
       setItems(inv);
+      setSummaries(sums);
     } catch { toast.error('Failed to refresh'); }
   };
 
@@ -1903,21 +2115,21 @@ export default function PortfolioPage() {
   };
 
   const filteredItems = itemsWithAlloc.filter(i => i.symbol?.toLowerCase().includes(search.toLowerCase()) || i.stockName?.toLowerCase().includes(search.toLowerCase()));
-  const totalInvested = itemsWithAlloc.reduce((s, i) => s + i.totalInvested, 0);
-  const totalCurrent = itemsWithAlloc.reduce((s, i) => s + i.currentValue, 0);
+  // Sourced from the fast summary cache, not the full transaction list —
+  // these render immediately without waiting for `items` to finish loading.
+  const totalInvested = summaries.reduce((s, i) => s + (i.invested || 0), 0);
+  const totalCurrent = summaries.reduce((s, i) => s + (i.currentValue || 0), 0);
   const totalPnL = totalCurrent - totalInvested;
+  // Brokerage isn't tracked in the summary cache (it's a per-transaction
+  // fee, not a rollup-able stock stat) — this one stat still comes from
+  // the raw list and so it fills in a little after the rest.
   const totalBrokerage = itemsWithAlloc.reduce((s, i) => s + (parseFloat(i.brokerage) || 0), 0);
-  // Combine all rows by symbol for charts
+  // Combine all rows by symbol for charts — from the fast summary cache
   const symbolMap = {};
-  itemsWithAlloc.forEach(i => {
+  summaries.forEach(i => {
     const k = i.symbol || i.stockName;
-    if (!symbolMap[k]) symbolMap[k] = { name: k, fullName: i.stockName, symbol: i.symbol || i.stockName, value: 0, invested: 0, qty: 0, currentPrice: 0, trades: 0 };
-    symbolMap[k].value    += i.currentValue;
-    symbolMap[k].invested += i.totalInvested;
-    symbolMap[k].qty      += i.quantity;
-    symbolMap[k].trades   += 1;
-    // keep highest currentPrice (or average — use last seen)
-    if (i.currentPrice > symbolMap[k].currentPrice) symbolMap[k].currentPrice = i.currentPrice;
+    if (!k) return;
+    symbolMap[k] = { name: k, fullName: i.stockName, symbol: k, value: i.currentValue || 0, invested: i.invested || 0, qty: i.quantity || 0, currentPrice: i.currentPrice || 0, trades: i.transactionCount || 0 };
   });
   const combinedSymbols = Object.values(symbolMap).sort((a, b) => {
     const avgBuyA = a.qty > 0 ? a.invested / a.qty : 0;
@@ -2097,10 +2309,18 @@ export default function PortfolioPage() {
           { icon: '🏦', label: 'Total Brokerage', val: fmt(totalBrokerage), c: 'var(--orange)' },
         ].map((s, i) => (<div key={i} className="stat" style={{ '--c': s.c }}><div className="stat-icon">{s.icon}</div><div className="stat-val" style={{ color: s.c }}>{s.val}</div><div className="stat-label">{s.label}</div></div>))}
       </div>
+      <div className="flex items-center justify-between" style={{ marginTop: 6, marginBottom: 4 }}>
+        <span className="fs-11 text-muted">
+          {itemsLoading ? 'Loading full transaction history in background…' : `${items.length} transactions across ${summaries.length} stock${summaries.length === 1 ? '' : 's'}`}
+        </span>
+        <button className="btn-icon" style={{ fontSize: 11, opacity: 0.7 }} onClick={() => rebuildSummaryCache(false)} disabled={rebuilding} title="Rebuild the summary cache from scratch if totals ever look out of sync">
+          {rebuilding ? <span className="spin" style={{ width: 12, height: 12 }} /> : '🔄'} Rebuild Cache
+        </button>
+      </div>
 
       {/* Tabs */}
       <div style={{ borderBottom: '1px solid var(--border)', overflowX: 'auto', display: 'flex', gap: 2, marginTop: 16, marginBottom: 16, WebkitOverflowScrolling: 'touch' }}>
-        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }, { key: 'contracts', label: '📄 Contracts' }, { key: 'ecas', label: '📑 eCAS' }].map(t => (
+        {[{ key: 'holdings', label: '📋 Holdings' }, { key: 'charts', label: '📊 Charts' }, { key: 'analysis', label: '📉 52W' }, { key: 'broker', label: '🏦 Broker' }, { key: 'dividends', label: '💸 Dividends' }, { key: 'contracts', label: '📄 Contracts' }, { key: 'ecas', label: '📑 eCAS' }, { key: 'reconcile', label: '🔄 Reconcile' }].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: '8px 12px', borderRadius: '8px 8px 0 0', border: 'none', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, background: tab === t.key ? 'var(--bg3)' : 'transparent', color: tab === t.key ? 'var(--text)' : 'var(--t3)', borderBottom: tab === t.key ? '2px solid var(--blue)' : '2px solid transparent' }}>
             {t.label}
@@ -2156,7 +2376,7 @@ export default function PortfolioPage() {
                 <div style={{ flex: 1, minWidth: 120, maxHeight: 200, overflowY: 'auto' }}>
                   {pieData.map((d, i) => (
                     <div key={i} className="flex justify-between items-center mb-2">
-                      <div className="flex items-center gap-2 fs-12"><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, flexShrink: 0 }} /><span className="text-muted">{d.name}</span></div>
+                      <div className="flex items-center gap-2 fs-12"><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, flexShrink: 0 }} /><span className="text-muted">{d.symbol || d.name}({fmt(d.invested)})</span></div>
                       <span className="font-mono fs-12 fw-bold">{d.pct}%</span>
                     </div>
                   ))}
@@ -2353,7 +2573,15 @@ export default function PortfolioPage() {
 
           {/* ── Stock-wise Summary Table ── */}
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="card-title">📋 Stock-wise Summary</div>
+            <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <div className="card-title" style={{ marginBottom: 0 }}>📋 Stock-wise Summary</div>
+              <select className="fs" style={{ maxWidth: 220 }} value={summaryStockFilter} onChange={e => setSummaryStockFilter(e.target.value)}>
+                <option value="">All Stocks</option>
+                {combinedSymbols.slice().sort((a, b) => a.symbol.localeCompare(b.symbol)).map(s => (
+                  <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
+                ))}
+              </select>
+            </div>
             <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
@@ -2383,7 +2611,7 @@ export default function PortfolioPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {combinedSymbols.map((s, idx) => {
+                  {combinedSymbols.filter(s => !summaryStockFilter || s.symbol === summaryStockFilter).map((s, idx) => {
                     const pnl     = s.value - s.invested;
                     const pnlPct  = s.invested > 0 ? ((pnl / s.invested) * 100).toFixed(2) : '0.00';
                     const avgBuy  = s.qty > 0 ? s.invested / s.qty : 0;
@@ -2438,7 +2666,11 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {tab === 'analysis' && <PriceAnalysisTab items={itemsWithAlloc} />}
+      {tab === 'analysis' && (
+        <Suspense fallback={<div className="spin-center" style={{ height: 120 }}><div className="spin spin-lg" /></div>}>
+          <PriceAnalysisTab items={itemsWithAlloc} />
+        </Suspense>
+      )}
       {tab === 'broker' && <BrokerReportTab items={itemsWithAlloc} brokers={brokers} />}
       {tab === 'dividends' && <DividendTab items={itemsWithAlloc} stocks={stocks} banks={banks} />}
       {tab === 'contracts' && (
@@ -2582,8 +2814,12 @@ export default function PortfolioPage() {
         </div>
       )}
 
+      {tab === 'reconcile' && (
+        <ReconcileTab items={items} brokers={brokers} onSaved={reloadItems} />
+      )}
+
       {modal && <Modal title={edit ? '✏️ Edit Stock' : '➕ Add Stock'} onClose={() => { setModal(false); setEdit(null); }}>
-        <InvForm item={edit} stocks={stocks} brokers={brokers} banks={banks} onSave={save} onSaveAndAnother={saveAndAnother} onClose={() => { setModal(false); setEdit(null); }} />
+        <InvForm item={edit} stocks={stocks} brokers={brokers} banks={banks} existingItems={items} onSave={save} onSaveAndAnother={saveAndAnother} onClose={() => { setModal(false); setEdit(null); }} />
       </Modal>}
       {delId && <ConfirmDelete onConfirm={del} onCancel={() => setDelId(null)} />}
     </div>
